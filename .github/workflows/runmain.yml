@@ -1,0 +1,62 @@
+name: Main
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**.py'
+      - '**.ipynb'
+      - 'requirements.txt'
+      - 'artifacts/**'
+  pull_request:
+    branches:
+      - main
+  # still allow manual trigger
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  test_model:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        data_version: [v1.0, v2.0]   # your DVC/Git tags or branches
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.9"
+
+      - uses: iterative/setup-cml@v2
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+      - name: Setup DVC Remote
+        env:
+          GCP_BUCKET: "gs://mlops-course-lively-nimbus-473407-m9"
+        run: |
+          dvc remote add -f -d gcs_remote $GCP_BUCKET
+      - name: Checkout and Pull DVC Data
+        run: |
+          echo "Checking out data version: ${{ matrix.data_version }}"
+          git fetch --tags
+          git checkout ${{ matrix.data_version }}
+          dvc checkout ${{ matrix.data_version }} || true
+          dvc pull || true  # pull corresponding data from remote
+      - name: Train the model
+        run: |
+          python train.py > main_output.txt 2>&1 || true
+      - name: Create CML report
+        env:
+          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "## Accuracy Output for ${{ matrix.data_version }}" > report.md
+          echo "\`\`\`" >> report.md
+          cat main_output.txt >> report.md
+          echo "\`\`\`" >> report.md
+
+          cml comment create --publish report.md
