@@ -1,17 +1,14 @@
-# Week 4- Graded Assignment 4
+# Week 5- Graded Assignment 5
 
 ### Assignment Objective
 
 
-1. Setup IRIS homework pipeline into a GitHub repository with two branches dev and main
+1. Log Experiment parameters, eval metrics and models utilizing MLFlow
 
-2. Create evaluation and data validation unit tests using pytest or unittest
+2. Demonstrate comparing two experiments using Metric Visualization in MLFlow portal
 
-3. For evaluation and testing, configure the Continuous Integration (CI) with GitHub Actions to fetch the model and data needed for evaluation from DVC configured in Week-2
+3. Remove existing model logging dependency from DVC
 
-4. Push inclusion of pytest code changes to dev branch and raise Pull Request to main branch
+4. Modify evaluation pipeline to fetch and utilize latest/best model from MLFlow model registry
 
-5. Every branch should have its own CI on push or PR merge
-
-6. Run a sanity test using GitHub actions printing a report as a comment using cml.
-
+5. (Optional) Modify CI to fetch and utilize latest/best model from MLFlow model registry to run sanity checks.
