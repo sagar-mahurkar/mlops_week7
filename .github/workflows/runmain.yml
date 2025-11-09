@@ -40,21 +40,28 @@ jobs:
         run: |
           pip install -r requirements.txt
 
+      # Configure DVC to use your GCS bucket
       - name: Setup DVC Remote
         env:
           GCP_BUCKET: "gs://mlops-course-lively-nimbus-473407-m9"
         run: |
           dvc remote add -f -d gcs_remote $GCP_BUCKET
 
+      # Authenticate to GCP using service account key from GitHub secret
       - name: Authenticate to GCP
         env:
           GCP_CREDENTIALS_JSON: ${{ secrets.GCP_CREDENTIALS_JSON }}
         run: |
           echo "$GCP_CREDENTIALS_JSON" > /tmp/gcp_key.json
           gcloud auth activate-service-account --key-file=/tmp/gcp_key.json
-          gcloud auth application-default login --quiet
           dvc remote modify gcs_remote credentialpath /tmp/gcp_key.json
 
+      # Optional: verify that authentication works
+      - name: Verify GCP access
+        run: |
+          gsutil ls gs://mlops-course-lively-nimbus-473407-m9 || echo "⚠️ Could not list bucket contents"
+
+      # Checkout the correct version of data and pull from DVC remote
       - name: Checkout and Pull DVC Data
         run: |
           echo "Checking out data version: ${{ matrix.data_version }}"
@@ -65,15 +72,18 @@ jobs:
           ls -lh
           ls -lh data* || true
 
+      # Run your training script
       - name: Train the model
         run: |
           python train.py > main_output.txt 2>&1 || true
 
+      # Display training log for debugging
       - name: Debug — show training output
         run: |
           echo "=== Training Log ==="
           cat main_output.txt || true
 
+      # Post a comment on the PR with results
       - name: Create CML report
         env:
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
