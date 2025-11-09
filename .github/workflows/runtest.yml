@@ -12,7 +12,7 @@ on:
   pull_request:
     branches:
       - dev
-  workflow_dispatch:  # manual trigger
+  workflow_dispatch:  # ✅ manual trigger (correctly placed and formatted)
 
 permissions:
   contents: write
@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        data_version: [v1.0, v2.0]   # your DVC/Git tags or branches
+        data_version: [v1.0, v2.0]
 
     steps:
       - uses: actions/checkout@v3
@@ -41,14 +41,12 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      # Configure DVC to use your GCS bucket
       - name: Setup DVC Remote
         env:
           GCP_BUCKET: "gs://mlops-lively-nimbus-473407-m9"
         run: |
           dvc remote add -f -d gcs_remote $GCP_BUCKET
 
-      # Authenticate to GCP using service account key from GitHub secret
       - name: Authenticate to GCP
         env:
           GCP_CREDENTIALS_JSON: ${{ secrets.GCP_CREDENTIALS_JSON }}
@@ -57,27 +55,19 @@ jobs:
           gcloud auth activate-service-account --key-file=/tmp/gcp_key.json
           dvc remote modify gcs_remote credentialpath /tmp/gcp_key.json
 
-      # Verify that authentication works
       - name: Verify GCP access
         run: |
           gsutil ls gs://mlops-lively-nimbus-473407-m9 || echo "⚠️ Could not list bucket contents"
 
-      # Checkout correct version and pull DVC data
       - name: Checkout and Pull DVC Data
         run: |
           echo "Checking out data version: ${{ matrix.data_version }}"
           git fetch --tags
           git checkout ${{ matrix.data_version }}
-          echo "===== DVC CONFIG ====="
-          dvc remote list
-          cat .dvc/config || true
-          echo "===== PULLING DATA ====="
           dvc pull -v || exit 1
           echo "✅ Pulled DVC data successfully"
-          echo "===== FILES IN WORKSPACE ====="
           ls -R .
 
-      # Ensure data.csv exists
       - name: Verify data.csv exists
         run: |
           if [ ! -f data.csv ] && [ ! -f data/data.csv ]; then
@@ -87,17 +77,14 @@ jobs:
           fi
           echo "✅ data.csv found!"
 
-      # Train the model
       - name: Train the model
         run: |
           python train.py > main_output.txt 2>&1 || true
 
-      # Run unit tests
       - name: Run unit tests
         run: |
           python -m unittest discover -v > test_output.txt 2>&1 || true
 
-      # Show outputs for debugging
       - name: Debug — show outputs
         run: |
           echo "=== Training Log ==="
@@ -105,7 +92,6 @@ jobs:
           echo "=== Test Log ==="
           cat test_output.txt || true
 
-      # Create and publish CML report as PR comment
       - name: Create CML report
         env:
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
