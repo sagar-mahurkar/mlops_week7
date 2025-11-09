@@ -42,10 +42,10 @@ jobs:
   test_model:
     runs-on: ubuntu-latest
 
-    # ✅ Optional matrix strategy for testing different data versions
-    strategy:
-      matrix:
-        data_version: [v1.0, v2.0]
+    # ❌ Removed matrix strategy (no separate data versions)
+    # strategy:
+    #   matrix:
+    #     data_version: [v1.0, v2.0]
 
     steps:
       # ----------------------------------------------------------
@@ -101,20 +101,11 @@ jobs:
           gsutil ls gs://mlops-course-lively-nimbus-473407-m9 || echo "⚠️ Could not list bucket contents"
 
       # ----------------------------------------------------------
-      # Step 7: Checkout correct data version and pull DVC data
+      # Step 7: Pull DVC data (no version switching)
       # ----------------------------------------------------------
-      - name: Checkout and Pull DVC Data
+      - name: Pull DVC Data
         run: |
-          echo "📦 Checking out data version: ${{ matrix.data_version }}"
-          git fetch --tags || true
-          git checkout ${{ matrix.data_version }} || true
-
-          echo "===== DVC CONFIGURATION ====="
-          dvc remote list
-          dvc remote list --local || true
-          cat .dvc/config || true
-
-          echo "===== PULLING DATA ====="
+          echo "📦 Pulling latest DVC data..."
           dvc pull -v || exit 1
           echo "✅ DVC data pulled successfully"
 
@@ -169,7 +160,7 @@ jobs:
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "📝 Creating CML report..."
-          echo "## 📊 Accuracy Output for ${{ matrix.data_version }}" > report.md
+          echo "## 📊 Accuracy Output" > report.md
           echo "\`\`\`" >> report.md
           cat main_output.txt >> report.md
           echo "\`\`\`" >> report.md
