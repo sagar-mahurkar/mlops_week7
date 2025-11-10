@@ -1,14 +1,17 @@
-# Week 5- Graded Assignment 5
+# Week 6- Graded Assignment 6
 
 ### Assignment Objective
 
+Building on top of last week’s Continuous Integration with GitHub Actions
 
-1. Log Experiment parameters, eval metrics and models utilizing MLFlow
+Develop and integrate Continuous Deployment using GitHub Actions for building the IRIS API using docker and deploying onto k8s (kubernetes)
 
-2. Demonstrate comparing two experiments using Metric Visualization in MLFlow portal
+1. Explain the difference between Kubernetes Pod and a Docker container as part of screencast
 
-3. Remove existing model logging dependency from DVC
+2. Use GitHub workflows/actions to build the docker image using DockerFile
 
-4. Modify evaluation pipeline to fetch and utilize latest/best model from MLFlow model registry
+3. Push the image to Google Artifact Registry
 
-5. (Optional) Modify CI to fetch and utilize latest/best model from MLFlow model registry to run sanity checks.
+4. Setup GCP Service account as needed
+
+5. Deploy it using Google Kubernetes Engine from GitHub Actions
