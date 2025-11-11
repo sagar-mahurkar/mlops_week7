@@ -1,7 +1,7 @@
 # ==============================================================
 # GitHub Actions Workflow: Main
 # Runs on push/PR merge to main + manual trigger
-# Used for model training, pulling DVC data, and posting results
+# Used for model training, testing, pulling DVC data, and posting results
 # ==============================================================
 
 name: Main
@@ -42,11 +42,6 @@ jobs:
   test_model:
     runs-on: ubuntu-latest
 
-    # ❌ Removed matrix strategy (no separate data versions)
-    # strategy:
-    #   matrix:
-    #     data_version: [v1.0, v2.0]
-
     steps:
       # ----------------------------------------------------------
       # Step 1: Checkout repository (full history required by DVC)
@@ -74,6 +69,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
+          pip install pytest
 
       # ----------------------------------------------------------
       # Step 5: Authenticate and configure DVC remote on GCP
@@ -86,7 +82,6 @@ jobs:
           echo "$GCP_CREDENTIALS_JSON" > gcp-key.json
           export GOOGLE_APPLICATION_CREDENTIALS=$(pwd)/gcp-key.json
 
-          # Configure DVC to use GCS bucket as remote storage
           echo "🔧 Setting up DVC remote..."
           dvc remote modify gcs_remote credentialpath $GOOGLE_APPLICATION_CREDENTIALS || \
           dvc remote add -d gcs_remote $GCP_BUCKET
@@ -137,7 +132,16 @@ jobs:
           echo "✅ Model training completed."
 
       # ----------------------------------------------------------
-      # Step 10: Debug workspace contents (optional)
+      # ✅ Step 10: Run automated tests using pytest
+      # ----------------------------------------------------------
+      - name: Run unit tests with pytest
+        run: |
+          echo "🧪 Running Pytest..."
+          pytest -v --maxfail=1 --disable-warnings || exit 1
+          echo "✅ All tests passed successfully."
+
+      # ----------------------------------------------------------
+      # Step 11: Debug workspace contents (optional)
       # ----------------------------------------------------------
       - name: Debug workspace contents
         run: |
@@ -145,7 +149,7 @@ jobs:
           ls -R
 
       # ----------------------------------------------------------
-      # Step 11: Display training output for debugging
+      # Step 12: Display training output for debugging
       # ----------------------------------------------------------
       - name: Show training log
         run: |
@@ -153,16 +157,21 @@ jobs:
           cat main_output.txt || true
 
       # ----------------------------------------------------------
-      # Step 12: Create and publish a CML report as PR comment
+      # Step 13: Create and publish a CML report as PR comment
       # ----------------------------------------------------------
       - name: Create and Publish CML Report
         env:
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "📝 Creating CML report..."
-          echo "## 📊 Accuracy Output" > report.md
+          echo "## 📊 Accuracy & Test Results" > report.md
           echo "\`\`\`" >> report.md
           cat main_output.txt >> report.md
+          echo "\`\`\`" >> report.md
+
+          echo "### ✅ Pytest Results" >> report.md
+          echo "\`\`\`" >> report.md
+          pytest -q || echo "⚠️ Some tests failed"
           echo "\`\`\`" >> report.md
 
           # Publish report as PR comment
