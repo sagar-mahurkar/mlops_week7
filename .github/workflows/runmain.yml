@@ -137,7 +137,7 @@ jobs:
       - name: Run unit tests with pytest
         run: |
           echo "🧪 Running Pytest..."
-          pytest -v --maxfail=1 --disable-warnings || exit 1
+          pytest -v --maxfail=1 --disable-warnings >> main_output.txt 2>&1 || exit 1
           echo "✅ All tests passed successfully."
 
       # ----------------------------------------------------------
