@@ -21,7 +21,7 @@ from sklearn.ensemble import RandomForestClassifier
 # --------------------------------------------------------------
 # Configuration: Define MLflow setup and local storage paths
 # --------------------------------------------------------------
-MLFLOW_TRACKING_URI = "http://35.202.91.253:5000/"  # MLflow tracking server
+MLFLOW_TRACKING_URI = "http://34.46.247.19:5000/"  # MLflow tracking server
 MODEL_NAME = "iris-random-forest"                     # Registered model name
 RUN_NAME = "Random Forest Hyperparameter Search"      # MLflow run name
 
