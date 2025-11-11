@@ -12,7 +12,7 @@ from sklearn.ensemble import RandomForestClassifier # Changed from DecisionTree
 import mlflow
 
 # --- Configuration ---
-MLFLOW_TRACKING_URI = "http://107.178.217.196:5000/"
+MLFLOW_TRACKING_URI = "http://35.202.91.253:5000/"
 MODEL_NAME = "iris-random-forest" # Updated model name
 RUN_NAME = "Random Forest Hyperparameter Search" # Updated run name
 
