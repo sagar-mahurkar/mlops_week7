@@ -2,3 +2,5 @@
 /.ipynb_checkpoints/
 /downloaded_models/
 /__pycache__/
+/artifacts/random_forest_classifier.pkl
+/artifacts/random_forest_model.pkl
