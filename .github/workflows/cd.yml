@@ -84,7 +84,7 @@ jobs:
           
           # 2. Run wrk: sustained load (120 connections for 2 mins)
           echo "Starting stress test on $TARGET_ENDPOINT for 2 minutes to trigger HPA..."
-          wrk -t4 -c120 -d120s $TARGET_ENDPOINT > wrk_results_1.txt
+          wrk -t4 -c1000 -d30s $TARGET_ENDPOINT > wrk_results_1.txt
           
           # 3. Write CML Report for Scenario 1 - Dump Raw Output
           echo "The load test ran for **2 minutes (120 seconds)** with 120 concurrent connections hitting \`/live_check\`." >> stress_report.md
