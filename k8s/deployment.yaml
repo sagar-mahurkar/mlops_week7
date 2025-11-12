@@ -16,22 +16,10 @@ spec:
     spec:
       containers:
         - name: iris-api-container
-          image: us-central1-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE}:latest
+          image: us-central1-docker.pkg.dev/lively-nimbus-473407-m9/my-repo/iris-api:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8200
-          readinessProbe:
-            httpGet:
-              path: /ready_check
-              port: 8200
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /live_check
-              port: 8200
-            initialDelaySeconds: 15
-            periodSeconds: 20
           resources:
             requests:
               cpu: "100m"
@@ -39,4 +27,16 @@ spec:
             limits:
               cpu: "500m"
               memory: "512Mi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8200
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8200
+            initialDelaySeconds: 15
+            periodSeconds: 20
       restartPolicy: Always

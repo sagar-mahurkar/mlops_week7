@@ -1,98 +1,166 @@
+# =====================================================================
+# 🌐 Continuous Deployment: FastAPI app → GKE (with autoscaling + tests)
+# ---------------------------------------------------------------------
+# This workflow builds a Docker image, pushes it to Artifact Registry,
+# deploys it on GKE, applies autoscaling, and runs load tests.
+# =====================================================================
+
 name: CD - Deploy FastAPI to GKE
 
+# ---------------------------------------------------------------------
+# 🔁 Triggers:
+# ---------------------------------------------------------------------
+# 1️⃣ Automatically on push to the main branch
+# 2️⃣ Manually via GitHub UI ("workflow_dispatch")
+# ---------------------------------------------------------------------
 on:
   push:
     branches:
       - main
   workflow_dispatch:
 
+# ---------------------------------------------------------------------
+# 🧱 Global Environment Variables
+# ---------------------------------------------------------------------
+# Stored as GitHub Secrets for security.
+# GAR_LOCATION  → your Artifact Registry region
+# PROJECT_ID    → GCP Project
+# REPOSITORY    → Artifact Registry repo name
+# CLUSTER_NAME  → GKE cluster name
+# CLUSTER_LOCATION → cluster region
+# ---------------------------------------------------------------------
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   GAR_LOCATION: us-central1
   REPOSITORY: ${{ secrets.GAR_REPO }}
-  IMAGE: demo-log-ml-service      # ✅ changed image name
+  IMAGE: demo-log-ml-service              # ✅ Docker image name
   CLUSTER_NAME: ${{ secrets.GKE_CLUSTER }}
   CLUSTER_LOCATION: ${{ secrets.GKE_LOCATION }}
-  DEPLOYMENT_NAME: demo-iris-workload
-  SERVICE_NAME: iris-fastapi-service
-  HPA_NAME: iris-fastapi-hpa
-  NAMESPACE: default
+  DEPLOYMENT_NAME: demo-iris-workload     # ✅ K8s Deployment
+  SERVICE_NAME: iris-fastapi-service      # ✅ K8s Service
+  HPA_NAME: iris-fastapi-hpa              # ✅ K8s HPA
+  NAMESPACE: default                      # ✅ Namespace in GKE
 
+# =====================================================================
+# 🚀 DEPLOY JOB
+# =====================================================================
 jobs:
   deploy:
     name: Deploy FastAPI to GKE and Run Load Tests
     runs-on: ubuntu-latest
 
     steps:
+      # -----------------------------------------------------------------
+      # 1️⃣ Checkout Source Code
+      # -----------------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
+      # -----------------------------------------------------------------
+      # 2️⃣ Authenticate to Google Cloud using a Service Account key
+      # -----------------------------------------------------------------
       - name: Authenticate Google Cloud
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_CREDENTIALS_JSON }}
 
+      # -----------------------------------------------------------------
+      # 3️⃣ Setup gcloud CLI and configure default project
+      # -----------------------------------------------------------------
       - name: Configure gcloud CLI
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.PROJECT_ID }}
           export_default_credentials: true
 
+      # -----------------------------------------------------------------
+      # 4️⃣ Install GKE Auth Plugin (required for modern GKE authentication)
+      # -----------------------------------------------------------------
       - name: Install GKE Auth Plugin
         run: gcloud components install gke-gcloud-auth-plugin --quiet
 
+      # -----------------------------------------------------------------
+      # 5️⃣ Configure Docker to push images to Artifact Registry
+      # -----------------------------------------------------------------
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker ${GAR_LOCATION}-docker.pkg.dev --quiet
 
+      # -----------------------------------------------------------------
+      # 6️⃣ Build and Push Docker Image to Artifact Registry
+      # -----------------------------------------------------------------
       - name: Build and Push Image
         run: |
           IMAGE_URI="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE}:latest"
-          echo "📦 Building and pushing image: $IMAGE_URI"
+          echo "📦 Building Docker image: $IMAGE_URI"
           docker build -t "$IMAGE_URI" .
           docker push "$IMAGE_URI"
+          echo "✅ Image pushed successfully!"
 
+      # -----------------------------------------------------------------
+      # 7️⃣ Fetch Cluster Credentials for kubectl access
+      # -----------------------------------------------------------------
       - name: Get GKE credentials
         run: |
           gcloud container clusters get-credentials "${CLUSTER_NAME}" \
             --region "${CLUSTER_LOCATION}" \
             --project "${PROJECT_ID}"
 
+      # -----------------------------------------------------------------
+      # 8️⃣ Apply Kubernetes Manifests (Deployment + Service)
+      # -----------------------------------------------------------------
+      # In flat structure, files are directly in repo root (no /k8s folder)
+      # -----------------------------------------------------------------
       - name: Apply Kubernetes manifests
         run: |
           echo "🧩 Applying Kubernetes manifests..."
-          kubectl apply -f k8s/deployment.yaml --namespace "$NAMESPACE"
-          kubectl apply -f k8s/service.yaml --namespace "$NAMESPACE"
+          kubectl apply -f deployment.yaml --namespace "$NAMESPACE"
+          kubectl apply -f service.yaml --namespace "$NAMESPACE"
 
+      # -----------------------------------------------------------------
+      # 9️⃣ Deploy Updated Image (forces rollout of latest Docker image)
+      # -----------------------------------------------------------------
       - name: Deploy updated image
         run: |
           IMAGE_URI="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE}:latest"
           CONTAINER_NAME=$(kubectl get deployment "$DEPLOYMENT_NAME" \
             -o jsonpath='{.spec.template.spec.containers[0].name}' \
             --namespace "$NAMESPACE")
-          echo "🔄 Updating $DEPLOYMENT_NAME → $IMAGE_URI"
+          echo "🔄 Updating deployment → $IMAGE_URI"
           kubectl set image deployment/"$DEPLOYMENT_NAME" \
             "$CONTAINER_NAME"="$IMAGE_URI" \
             --namespace "$NAMESPACE"
-          echo "⏳ Waiting for rollout..."
-          kubectl rollout status deployment/"$DEPLOYMENT_NAME" --namespace "$NAMESPACE" --timeout=5m
+          echo "⏳ Waiting for rollout to complete..."
+          kubectl rollout status deployment/"$DEPLOYMENT_NAME" \
+            --namespace "$NAMESPACE" \
+            --timeout=5m
 
+      # -----------------------------------------------------------------
+      # 🔟 Verify Deployed Pods
+      # -----------------------------------------------------------------
       - name: Verify deployed pods
         run: kubectl get pods --namespace "$NAMESPACE" -o wide
 
+      # -----------------------------------------------------------------
+      # 1️⃣1️⃣ Apply Horizontal Pod Autoscaler (HPA)
+      # -----------------------------------------------------------------
       - name: Apply Horizontal Pod Autoscaler
         run: |
           echo "⚙️ Applying HPA (min=1, max=3)..."
-          kubectl apply -f k8s/hpa.yaml --namespace "$NAMESPACE"
+          kubectl apply -f hpa.yaml --namespace "$NAMESPACE"
           kubectl get hpa --namespace "$NAMESPACE"
 
+      # -----------------------------------------------------------------
+      # 1️⃣2️⃣ Stress Test #1 — Autoscaling Enabled
+      # -----------------------------------------------------------------
       - name: Stress Test with Autoscaling
         run: |
-          echo "🏋️ Installing wrk..."
+          echo "🏋️ Installing wrk (HTTP benchmarking tool)..."
           sudo apt-get update -y && sudo apt-get install -y wrk
 
           echo "🌐 Fetching external LoadBalancer IP..."
           EXTERNAL_IP=$(kubectl get svc $SERVICE_NAME -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
           echo "✅ External IP: $EXTERNAL_IP"
+
           if [ -z "$EXTERNAL_IP" ]; then
             echo "❌ ERROR: LoadBalancer IP not found."
             exit 1
@@ -105,20 +173,43 @@ jobs:
           kubectl get hpa --namespace "$NAMESPACE"
           kubectl get pods --namespace "$NAMESPACE" -o wide
 
+      # -----------------------------------------------------------------
+      # 1️⃣3️⃣ Disable Autoscaling (set replicas=1 for fixed test)
+      # -----------------------------------------------------------------
       - name: Disable Autoscaling (Fix replicas=1)
         run: |
-          echo "🧱 Disabling autoscaling and fixing replicas=1..."
+          echo "🧱 Disabling autoscaling..."
           kubectl delete hpa "$HPA_NAME" --namespace "$NAMESPACE" || true
           kubectl scale deployment "$DEPLOYMENT_NAME" --replicas=1 --namespace "$NAMESPACE"
 
+      # -----------------------------------------------------------------
+      # 1️⃣4️⃣ Stress Test #2 — Fixed 1 Pod
+      # -----------------------------------------------------------------
       - name: Stress Test with Fixed Pod Count
         run: |
           echo "🚦 Running second stress test (2000 concurrent requests, 1 pod)..."
           EXTERNAL_IP=$(kubectl get svc $SERVICE_NAME -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
           wrk -t4 -c2000 -d30s -s scripts/post.lua http://$EXTERNAL_IP/predict | tee wrk_test2.log
 
+          echo "📈 Gathering pod metrics..."
+          kubectl get pods --namespace "$NAMESPACE" -o wide
+          kubectl top pods --namespace "$NAMESPACE" || echo "⚠️ Metrics server not installed"
+
+      # -----------------------------------------------------------------
+      # 1️⃣5️⃣ Upload Load Test Results as Artifacts
+      # -----------------------------------------------------------------
       - name: Upload wrk results
         uses: actions/upload-artifact@v4
         with:
           name: load-test-results
           path: wrk_test*.log
+
+      # -----------------------------------------------------------------
+      # 1️⃣6️⃣ Summarize Test Results
+      # -----------------------------------------------------------------
+      - name: Summarize Test Results
+        run: |
+          echo "✅ Load Test Summary:"
+          echo "- Test 1: Autoscaling (1→3 pods) with 1000 requests"
+          echo "- Test 2: Fixed 1 pod with 2000 requests"
+          echo "Use workflow logs + artifacts to analyze scaling and latency."

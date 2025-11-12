@@ -1,43 +1,75 @@
 # ==============================================================
 # FastAPI Application: Train, Fetch, and Predict using MLflow
 # --------------------------------------------------------------
-# This app allows:
-#   ✅ Training a RandomForest model and logging it to MLflow
-#   ✅ Fetching the latest model version from MLflow
-#   ✅ Making predictions using the latest local or remote model
+# ✅ Trains a RandomForest model, logs to MLflow
+# ✅ Fetches latest model version from MLflow
+# ✅ Makes predictions using latest model
+# ✅ Includes structured logging + OpenTelemetry tracing
 # ==============================================================
 
 import os
-import sys
-import mlflow
+import time
+import json
 import joblib
+import mlflow
+import logging
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from mlflow.tracking import MlflowClient
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.ensemble import RandomForestClassifier
 
 # --------------------------------------------------------------
-# Configuration: Define MLflow setup and local storage paths
+# OpenTelemetry setup
 # --------------------------------------------------------------
-MLFLOW_TRACKING_URI = "http://34.123.22.110:5000/"  # MLflow tracking server
-MODEL_NAME = "iris-random-forest"                     # Registered model name
-RUN_NAME = "Random Forest Hyperparameter Search"      # MLflow run name
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
 
-# Local directories for saving models
-MODEL_DOWNLOAD_PATH = "downloaded_models"             # Directory to download model artifacts
+trace.set_tracer_provider(TracerProvider())
+tracer = trace.get_tracer(__name__)
+span_processor = BatchSpanProcessor(CloudTraceSpanExporter())
+trace.get_tracer_provider().add_span_processor(span_processor)
+
+# --------------------------------------------------------------
+# Logging Setup (Structured JSON logs)
+# --------------------------------------------------------------
+logger = logging.getLogger("iris-ml-service")
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log_entry = {
+            "severity": record.levelname,
+            "message": record.getMessage(),
+            "timestamp": self.formatTime(record, "%Y-%m-%d %H:%M:%S"),
+        }
+        return json.dumps(log_entry)
+
+handler.setFormatter(JsonFormatter())
+logger.addHandler(handler)
+
+# --------------------------------------------------------------
+# MLflow Configuration
+# --------------------------------------------------------------
+MLFLOW_TRACKING_URI = "http://34.123.22.110:5000/"
+MODEL_NAME = "iris-random-forest"
+RUN_NAME = "Random Forest Hyperparameter Search"
+
+MODEL_DOWNLOAD_PATH = "downloaded_models"
 MODEL_ARTIFACT_PATH = os.path.join(MODEL_DOWNLOAD_PATH, "random_forest_model")
-
-LOCAL_ARTIFACT_DIR = "artifacts"                      # Directory to save trained models locally
+LOCAL_ARTIFACT_DIR = "artifacts"
 LOCAL_MODEL_PATH = os.path.join(LOCAL_ARTIFACT_DIR, "random_forest_model.pkl")
 
-# Ensure required directories exist
 os.makedirs(MODEL_DOWNLOAD_PATH, exist_ok=True)
 os.makedirs(LOCAL_ARTIFACT_DIR, exist_ok=True)
 
 # --------------------------------------------------------------
-# FastAPI Application Setup
+# FastAPI Setup
 # --------------------------------------------------------------
 app = FastAPI(
     title="MLflow Model API",
@@ -46,60 +78,42 @@ app = FastAPI(
 )
 
 # --------------------------------------------------------------
-# Request Schema for Prediction Input
+# Input Schema
 # --------------------------------------------------------------
 class IrisInput(BaseModel):
-    """Input schema for prediction requests"""
     sepal_length: float
     sepal_width: float
     petal_length: float
     petal_width: float
 
 # --------------------------------------------------------------
-# Utility: Load and Split Dataset
+# Data Preparation
 # --------------------------------------------------------------
 def prepare_data():
-    """
-    Load the Iris dataset from a CSV file, split it into
-    training and testing sets, and return features/labels.
-    """
     try:
-        print("Preparing data...")
         data = pd.read_csv("./data.csv")
+        data.columns = ["sepal_length", "sepal_width", "petal_length", "petal_width", "species"]
 
-        # Ensure consistent column names
-        data = pd.DataFrame(
-            data, columns=["sepal_length", "sepal_width", "petal_length", "petal_width", "species"]
-        )
-
-        # Split data into train/test sets (80/20)
         train, test = train_test_split(
             data, test_size=0.2, stratify=data["species"], random_state=42
         )
 
-        feature_cols = ["sepal_length", "sepal_width", "petal_length", "petal_width"]
-        X_train, y_train = train[feature_cols], train["species"]
-        X_test, y_test = test[feature_cols], test["species"]
+        X_train = train[["sepal_length", "sepal_width", "petal_length", "petal_width"]]
+        y_train = train["species"]
+        X_test = test[["sepal_length", "sepal_width", "petal_length", "petal_width"]]
+        y_test = test["species"]
 
-        print("Data split complete.")
         return X_train, y_train, X_test, y_test
-
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error preparing data: {e}")
+        raise HTTPException(status_code=500, detail=f"Data preparation failed: {e}")
 
 # --------------------------------------------------------------
-# Utility: Train and Log RandomForest Model to MLflow
+# Train and Log Model
 # --------------------------------------------------------------
 def tune_random_forest(X_train, y_train, X_test, y_test):
-    """
-    Train a RandomForest model using GridSearchCV for hyperparameter tuning.
-    Logs best model parameters and metrics to MLflow and saves the model locally.
-    """
     try:
-        print(f"Starting MLflow logging to: {MLFLOW_TRACKING_URI}")
         mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
-        # Define hyperparameter grid for tuning
         rf_param_grid = {
             "n_estimators": [50, 100, 200],
             "criterion": ["gini", "entropy"],
@@ -108,187 +122,153 @@ def tune_random_forest(X_train, y_train, X_test, y_test):
             "class_weight": [None, "balanced"],
         }
 
-        # Start a new MLflow run
         with mlflow.start_run(run_name=RUN_NAME):
             rf_model = RandomForestClassifier(random_state=42)
-            rf_grid_search = GridSearchCV(
-                rf_model, rf_param_grid, cv=5, scoring="accuracy", n_jobs=-1, verbose=2
+            grid = GridSearchCV(
+                rf_model, rf_param_grid, cv=5, scoring="accuracy", n_jobs=-1, verbose=1
             )
+            grid.fit(X_train, y_train)
 
-            print("Executing hyperparameter search...")
-            rf_grid_search.fit(X_train, y_train)
+            best_model = grid.best_estimator_
+            best_score_cv = grid.best_score_
+            test_score = grid.score(X_test, y_test)
 
-            # Extract best model and metrics
-            best_model = rf_grid_search.best_estimator_
-            best_score_cv = rf_grid_search.best_score_
-            test_score = rf_grid_search.score(X_test, y_test)
+            mlflow.log_params(grid.best_params_)
+            mlflow.log_metrics({
+                "best_cv_accuracy": best_score_cv,
+                "final_test_accuracy": test_score
+            })
 
-            print("\n--- Tuning Results ---")
-            print(f"Best parameters: {rf_grid_search.best_params_}")
-            print(f"Best CV score: {best_score_cv:.4f}")
-            print(f"Test set accuracy: {test_score:.4f}")
+            mlflow.sklearn.log_model(best_model, "random_forest_model", registered_model_name=MODEL_NAME)
 
-            # --- Log experiment results to MLflow ---
-            mlflow.log_params(rf_grid_search.best_params_)
-            mlflow.log_metric("best_cv_accuracy", best_score_cv)
-            mlflow.log_metric("final_test_accuracy", test_score)
-
-            # Save and register model to MLflow
-            mlflow.sklearn.log_model(
-                best_model,
-                "random_forest_model",
-                registered_model_name=MODEL_NAME,
-            )
-
-            # Save model locally for quick inference
             joblib.dump(best_model, LOCAL_MODEL_PATH)
-            print(f"✅ Model saved locally at: {LOCAL_MODEL_PATH}")
+            logger.info(f"Model trained and saved locally at {LOCAL_MODEL_PATH}")
 
-        print("MLflow run finished successfully.")
         return {
-            "best_params": rf_grid_search.best_params_,
+            "best_params": grid.best_params_,
             "cv_accuracy": best_score_cv,
             "test_accuracy": test_score,
-            "local_model_path": LOCAL_MODEL_PATH,
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error during model training: {e}")
+        raise HTTPException(status_code=500, detail=f"Training failed: {e}")
 
 # --------------------------------------------------------------
-# Utility: Fetch and Download Latest Registered Model from MLflow
+# Fetch Latest Registered Model from MLflow
 # --------------------------------------------------------------
 def fetch_latest_model():
-    """
-    Fetch the latest registered model version from MLflow,
-    download its artifacts, and return metadata.
-    """
     try:
         mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
         client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
 
-        print(f"Searching for latest version of model: {MODEL_NAME}")
-
-        # Retrieve most recent model version
-        versions = client.search_model_versions(
-            filter_string=f"name='{MODEL_NAME}'",
-            order_by=["version_number DESC"],
-            max_results=1,
-        )
-
+        versions = client.search_model_versions(f"name='{MODEL_NAME}'")
         if not versions:
-            raise HTTPException(status_code=404, detail="No registered versions found.")
+            raise HTTPException(status_code=404, detail="No registered model found.")
 
-        latest_version = versions[0]
+        latest_version = max(versions, key=lambda v: int(v.version))
         run_id = latest_version.run_id
-        print(f"Found model v{latest_version.version}, Run ID: {run_id}")
 
-        # Download model artifact from MLflow
-        print(f"Downloading model artifact from run {run_id}...")
         downloaded_path = mlflow.artifacts.download_artifacts(
-            run_id=run_id,
-            artifact_path="random_forest_model",
-            dst_path=MODEL_DOWNLOAD_PATH,
+            run_id=run_id, artifact_path="random_forest_model", dst_path=MODEL_DOWNLOAD_PATH
         )
 
-        print(f"Model downloaded successfully to: {downloaded_path}")
-        return {
-            "model_name": MODEL_NAME,
-            "version": latest_version.version,
-            "run_id": run_id,
-            "download_path": downloaded_path,
-        }
-
+        return {"version": latest_version.version, "download_path": downloaded_path}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching model: {e}")
+        raise HTTPException(status_code=500, detail=f"Fetch failed: {e}")
 
 # --------------------------------------------------------------
-# Utility: Load Model from Local or Remote Sources
+# Load Latest Model
 # --------------------------------------------------------------
 def load_latest_model():
-    """
-    Load the model in order of preference:
-    1️⃣ Load from local artifacts ('artifacts/random_forest_model.pkl')
-    2️⃣ Load from already downloaded MLflow artifacts
-    3️⃣ Fetch from MLflow if missing locally
-    """
     try:
-        # Try local cached model first
         if os.path.exists(LOCAL_MODEL_PATH):
-            print(f"✅ Loading model from local artifacts: {LOCAL_MODEL_PATH}")
             return joblib.load(LOCAL_MODEL_PATH)
-
-        # Try downloaded MLflow artifact
         elif os.path.exists(MODEL_ARTIFACT_PATH):
-            print(f"✅ Loading model from downloaded MLflow artifacts: {MODEL_ARTIFACT_PATH}")
-            model = mlflow.sklearn.load_model(MODEL_ARTIFACT_PATH)
-            joblib.dump(model, LOCAL_MODEL_PATH)
-            print(f"💾 Cached model locally at: {LOCAL_MODEL_PATH}")
-            return model
-
-        # Fetch from MLflow if not found
+            return mlflow.sklearn.load_model(MODEL_ARTIFACT_PATH)
         else:
-            print("⚠️ Model not found locally. Fetching latest from MLflow...")
             fetch_latest_model()
-
-            if os.path.exists(MODEL_ARTIFACT_PATH):
-                model = mlflow.sklearn.load_model(MODEL_ARTIFACT_PATH)
-                joblib.dump(model, LOCAL_MODEL_PATH)
-                print(f"💾 Cached fetched model locally at: {LOCAL_MODEL_PATH}")
-                return model
-            else:
-                raise HTTPException(status_code=404, detail="Model fetch failed — artifact not found after download.")
-
+            return mlflow.sklearn.load_model(MODEL_ARTIFACT_PATH)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error loading model: {e}")
+        raise HTTPException(status_code=500, detail=f"Model load failed: {e}")
 
 # --------------------------------------------------------------
-# FastAPI Endpoints
+# Probes & Middleware
 # --------------------------------------------------------------
+@app.on_event("startup")
+async def startup_event():
+    app.state.is_alive = True
+    app.state.is_ready = False
+    time.sleep(2)
+    app.state.is_ready = True
 
-@app.get("/", summary="Welcome to Iris Classifier API")
-def read_root():
-    """Read the default route"""
+@app.get("/live_check", tags=["Probe"])
+async def liveness_probe():
+    if getattr(app.state, "is_alive", False):
+        return {"status": "alive"}
+    return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@app.get("/ready_check", tags=["Probe"])
+async def readiness_probe():
+    if getattr(app.state, "is_ready", False):
+        return {"status": "ready"}
+    return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    start = time.time()
+    response = await call_next(request)
+    response.headers["X-Process-Time-ms"] = str(round((time.time() - start) * 1000, 2))
+    return response
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    span = trace.get_current_span()
+    trace_id = format(span.get_span_context().trace_id, "032x")
+    logger.exception(json.dumps({
+        "event": "unhandled_exception",
+        "trace_id": trace_id,
+        "path": str(request.url),
+        "error": str(exc)
+    }))
+    return JSONResponse(status_code=500, content={"detail": "Internal Server Error", "trace_id": trace_id})
+
+# --------------------------------------------------------------
+# Endpoints
+# --------------------------------------------------------------
+@app.get("/")
+def root():
     return {"message": "Welcome to the Iris Classifier API"}
 
-
-@app.post("/train", summary="Train and log a Random Forest model to MLflow")
+@app.post("/train")
 def train_model():
-    """Train model, log to MLflow, and dump locally."""
     X_train, y_train, X_test, y_test = prepare_data()
-    result = tune_random_forest(X_train, y_train, X_test, y_test)
-    return {"status": "success", "details": result}
+    return {"status": "success", "details": tune_random_forest(X_train, y_train, X_test, y_test)}
 
-
-@app.get("/fetch", summary="Fetch latest model from MLflow")
+@app.get("/fetch")
 def fetch_model():
-    """Fetch the latest version of the model from MLflow."""
-    result = fetch_latest_model()
-    return {"status": "success", "details": result}
+    return {"status": "success", "details": fetch_latest_model()}
 
+@app.post("/predict")
+async def predict(input_data: IrisInput, request: Request):
+    with tracer.start_as_current_span("model_inference") as span:
+        trace_id = format(span.get_span_context().trace_id, "032x")
+        model = load_latest_model()
 
-@app.post("/predict", summary="Predict class using latest trained model")
-def predict(input_data: IrisInput):
-    """
-    Predict species class based on input Iris flower measurements.
-    Automatically loads latest available model.
-    """
-    model = load_latest_model()
-
-    # Convert input to DataFrame
-    data = pd.DataFrame(
-        [[input_data.sepal_length, input_data.sepal_width, input_data.petal_length, input_data.petal_width]],
-        columns=["sepal_length", "sepal_width", "petal_length", "petal_width"],
-    )
-
-    try:
+        data = pd.DataFrame([input_data.dict().values()], columns=input_data.dict().keys())
         preds = model.predict(data)
+        latency = round((time.time() - request.scope.get("start_time", time.time())) * 1000, 2)
+
+        logger.info(json.dumps({
+            "event": "prediction",
+            "trace_id": trace_id,
+            "input": input_data.dict(),
+            "prediction": preds.tolist(),
+            "latency_ms": latency
+        }))
         return {"status": "success", "prediction": preds.tolist()}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error during prediction: {e}")
 
 # --------------------------------------------------------------
-# Entry Point: Run App with Uvicorn
+# Entry Point
 # --------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
