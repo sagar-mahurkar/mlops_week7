@@ -1,0 +1,46 @@
+name: Artifact Registry Diagnostic
+
+on:
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: lively-nimbus-473407-m9
+  REPOSITORY: my-repo
+  REGION: us-central1
+  SERVICE_ACCOUNT: github-actions@lively-nimbus-473407-m9.iam.gserviceaccount.com
+
+jobs:
+  test-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🧰 Checkout repo
+        uses: actions/checkout@v4
+
+      - name: ☁️ Install Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          service_account_key: ${{ secrets.GCP_CREDENTIALS_JSON }}
+          export_default_credentials: true
+
+      - name: 🔧 Configure Docker auth
+        run: |
+          echo "🔧 Configuring Docker for Artifact Registry..."
+          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+          echo "🔍 Docker config file content:"
+          cat ~/.docker/config.json
+
+      - name: 🧪 Build and push simple image
+        run: |
+          IMAGE_URI="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/diagnostic-test:latest"
+          echo "🧱 Building test image: $IMAGE_URI"
+          echo -e "FROM busybox\nCMD echo '✅ Hello from Artifact Registry test image!'" > Dockerfile
+          docker build -t "$IMAGE_URI" .
+          echo "🚀 Pushing image..."
+          docker push "$IMAGE_URI"
+
+      - name: 🧹 Cleanup
+        if: always()
+        run: |
+          echo "🧹 Done. If push succeeded, authentication works fine."
