@@ -17,7 +17,7 @@ env:
   CLUSTER_NAME: demo-gke-iris-cluster  
   CLUSTER_LOCATION: us-central1   
   # NOTE: The DEPLOYMENT_NAME is used for K8s object names (HPA, SVC, Deployment)
-  DEPLOYMENT_NAME: iris-fastapi
+  DEPLOYMENT_NAME: iris-fastapi-deployment
   SERVICE_NAME: iris-fastapi-service
   HPA_NAME: iris-fastapi-hpa         
   NAMESPACE: default
