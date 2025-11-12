@@ -1,4 +1,4 @@
-name: CD - Deploy to GKE
+name: CD - Deploy FastAPI to GKE
 
 on:
   push:
@@ -20,78 +20,91 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # -----------------------------------------------------------
+      # Checkout code
+      # -----------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
+      # -----------------------------------------------------------
+      # Decode Base64 service account key
+      # -----------------------------------------------------------
+      - name: Decode service account key
+        run: |
+          echo "${{ secrets.GCP_CREDENTIALS_B64 }}" | base64 --decode > gcp-key.json
+          echo "🔍 Service account key decoded to gcp-key.json"
+
+      # -----------------------------------------------------------
+      # Setup gcloud with decoded JSON
+      # -----------------------------------------------------------
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-          service_account_key: ${{ secrets.GCP_CREDENTIALS_JSON }}
+          service_account_key: gcp-key.json
           export_default_credentials: true
 
-      # 🧩 Debugging Step 1: Verify active account
-      - name: Debug gcloud auth info
+      # -----------------------------------------------------------
+      # Debug authentication
+      # -----------------------------------------------------------
+      - name: Debug gcloud auth
         run: |
-          echo "🔍 Checking gcloud auth info"
+          echo "🔍 Active account:"
           gcloud auth list
-          gcloud config list
-          echo "🔍 Verifying access token"
-          gcloud auth print-access-token | head -c 20 && echo "..."
+          echo "🔍 Project:"
+          gcloud config list project
+          echo "🔍 Artifact Registry repositories:"
+          gcloud artifacts repositories list --location=${{ env.GAR_LOCATION }}
 
+      # -----------------------------------------------------------
       # Configure Docker for Artifact Registry
+      # -----------------------------------------------------------
       - name: Configure Docker auth for Artifact Registry
         run: |
-          echo "🔧 Configuring Docker auth for Artifact Registry"
-          gcloud auth configure-docker "${{ env.GAR_LOCATION }}-docker.pkg.dev" --quiet
+          gcloud auth configure-docker ${GAR_LOCATION}-docker.pkg.dev --quiet
+          echo "🔍 Docker config:"
+          cat ~/.docker/config.json | grep pkg.dev || echo "❌ No pkg.dev entry found"
 
-      # 🧩 Debugging Step 2: Verify Docker credential helper
-      - name: Debug Docker auth config
-        run: |
-          echo "🔍 Checking Docker credential config"
-          cat ~/.docker/config.json | grep pkg.dev || echo "❌ No pkg.dev entry found in Docker config"
-
-      # 🧩 Debugging Step 3: Verify Artifact Registry access
-      - name: Debug Artifact Registry access
-        run: |
-          echo "🔍 Listing repositories in region: ${{ env.GAR_LOCATION }}"
-          gcloud artifacts repositories list --location=${{ env.GAR_LOCATION }} || true
-
-      # 🧩 Debugging Step 4: Check IAM bindings for the repo
-      - name: Debug IAM bindings
-        run: |
-          echo "🔍 Checking IAM bindings for repo: ${{ env.REPOSITORY }}"
-          gcloud artifacts repositories get-iam-policy "${{ env.REPOSITORY }}" --location=${{ env.GAR_LOCATION }} || true
-
+      # -----------------------------------------------------------
       # Build Docker image
+      # -----------------------------------------------------------
       - name: Build Docker image
         run: |
-          IMAGE_URI="${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}:latest"
+          IMAGE_URI="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE}:latest"
           echo "📦 Building image: $IMAGE_URI"
           docker build -t "$IMAGE_URI" .
 
-      # 🧩 Debugging Step 5: Verify Docker image exists locally
+      # -----------------------------------------------------------
+      # Debug local Docker images
+      # -----------------------------------------------------------
       - name: Debug local Docker images
         run: |
-          echo "🔍 Listing local Docker images"
           docker images | grep iris-api || echo "❌ No local iris-api image found"
 
+      # -----------------------------------------------------------
       # Push Docker image
+      # -----------------------------------------------------------
       - name: Push Docker image
         run: |
-          IMAGE_URI="${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}:latest"
+          IMAGE_URI="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE}:latest"
           echo "🚀 Pushing image: $IMAGE_URI"
           docker push "$IMAGE_URI"
 
+      # -----------------------------------------------------------
+      # Get GKE credentials
+      # -----------------------------------------------------------
       - name: Get GKE credentials
         run: |
-          gcloud container clusters get-credentials "${{ env.CLUSTER_NAME }}" \
-            --region "${{ env.CLUSTER_LOCATION }}" \
-            --project "${{ env.PROJECT_ID }}"
+          gcloud container clusters get-credentials "${CLUSTER_NAME}" \
+            --region "${CLUSTER_LOCATION}" \
+            --project "${PROJECT_ID}"
 
+      # -----------------------------------------------------------
+      # Deploy updated image to GKE
+      # -----------------------------------------------------------
       - name: Deploy updated image to GKE
         run: |
-          IMAGE_URI="${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}:latest"
+          IMAGE_URI="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE}:latest"
           echo "🔄 Updating deployment image to $IMAGE_URI"
           kubectl set image deployment/iris-api-deployment \
             iris-api-container="$IMAGE_URI" \
