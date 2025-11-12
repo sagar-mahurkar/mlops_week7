@@ -1,17 +1,16 @@
-# Week 6- Graded Assignment 6
+# Week 7- Graded Assignment 7
 
 ### Assignment Objective
 
-Building on top of last week’s Continuous Integration with GitHub Actions
+Building on last week's CI/CD pipeline
 
-Develop and integrate Continuous Deployment using GitHub Actions for building the IRIS API using docker and deploying onto k8s (kubernetes)
+This week, we will be scaling the homework IRIS classification pipeline to handle multiple concurrent inferences and observe bottlenecks.
 
-1. Explain the difference between Kubernetes Pod and a Docker container as part of screencast
+1. Extend your existing Github CI/CD workflow to stress test the deployment
 
-2. Use GitHub workflows/actions to build the docker image using DockerFile
+2. Use wrk to stimulate the scenario of high number(>1000) of requests after successful deployment
 
-3. Push the image to Google Artifact Registry
+3. Demonstrate Kubernetes auto scaling with max_pods : 3 and default pod availability of 1
 
-4. Setup GCP Service account as needed
+4. Observe bottlenecks when auto scaling is restricted to 1 pod and request concurrency increased from 1000 to 2000
 
-5. Deploy it using Google Kubernetes Engine from GitHub Actions
