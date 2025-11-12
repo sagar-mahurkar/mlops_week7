@@ -1,18 +1,28 @@
+# hpa.yaml
+
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: iris-fastapi-hpa
 spec:
+  # This section MUST match the Deployment name for the HPA to work.
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: demo-iris-workload
+    name: iris-fastapi-deployment # <-- CORRECTED from 'demo-iris-workload'
+  
+  # Minimum number of replicas to run (even when load is low).
   minReplicas: 1
+  
+  # Maximum number of replicas the HPA is allowed to scale up to.
   maxReplicas: 3
+  
+  # Metrics used to determine when to scale up or down.
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
+          # Target CPU utilization as a percentage of the requested CPU (100m in deployment.yaml).
           type: Utilization
           averageUtilization: 60

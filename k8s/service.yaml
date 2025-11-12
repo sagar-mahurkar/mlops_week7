@@ -3,9 +3,16 @@ kind: Service
 metadata:
   name: iris-fastapi-service
 spec:
-  type: LoadBalancer
+  # CRITICAL: This MUST match the labels defined in your Deployment's Pod template.
   selector:
-    app: iris-api
+    app: iris-fastapi
+  
+  # Type LoadBalancer provisions an external Load Balancer (like a GCE/GKE Load Balancer).
+  type: LoadBalancer
+  
   ports:
-    - port: 80
+    # Port 80 is the external port (what clients connect to, e.g., http://EXTERNAL-IP:80)
+    - protocol: TCP
+      port: 80
+      # TargetPort 8200 is the internal port the Pod's container is listening on (Uvicorn port)
       targetPort: 8200

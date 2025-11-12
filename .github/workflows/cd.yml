@@ -1,17 +1,16 @@
 # =====================================================================
 # 🌐 Continuous Deployment: FastAPI app → GKE (with autoscaling + tests)
 # ---------------------------------------------------------------------
-# This workflow builds a Docker image, pushes it to Artifact Registry,
-# deploys it on GKE, applies autoscaling, and runs load tests.
+# This workflow:
+# 1️⃣ Builds & pushes Docker image to Google Artifact Registry
+# 2️⃣ Deploys FastAPI to GKE (Autopilot or Standard cluster)
+# 3️⃣ Applies Service, HPA, and runs stress/load tests
 # =====================================================================
 
 name: CD - Deploy FastAPI to GKE
 
 # ---------------------------------------------------------------------
 # 🔁 Triggers:
-# ---------------------------------------------------------------------
-# 1️⃣ Automatically on push to the main branch
-# 2️⃣ Manually via GitHub UI ("workflow_dispatch")
 # ---------------------------------------------------------------------
 on:
   push:
@@ -20,14 +19,7 @@ on:
   workflow_dispatch:
 
 # ---------------------------------------------------------------------
-# 🧱 Global Environment Variables
-# ---------------------------------------------------------------------
-# Stored as GitHub Secrets for security.
-# GAR_LOCATION  → your Artifact Registry region
-# PROJECT_ID    → GCP Project
-# REPOSITORY    → Artifact Registry repo name
-# CLUSTER_NAME  → GKE cluster name
-# CLUSTER_LOCATION → cluster region
+# 🧱 Global Environment Variables (set via GitHub Secrets)
 # ---------------------------------------------------------------------
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -36,13 +28,13 @@ env:
   IMAGE: demo-log-ml-service              # ✅ Docker image name
   CLUSTER_NAME: ${{ secrets.GKE_CLUSTER }}
   CLUSTER_LOCATION: ${{ secrets.GKE_LOCATION }}
-  DEPLOYMENT_NAME: demo-iris-workload     # ✅ K8s Deployment
-  SERVICE_NAME: iris-fastapi-service      # ✅ K8s Service
-  HPA_NAME: iris-fastapi-hpa              # ✅ K8s HPA
-  NAMESPACE: default                      # ✅ Namespace in GKE
+  DEPLOYMENT_NAME: demo-iris-workload     # ✅ Kubernetes Deployment
+  SERVICE_NAME: iris-fastapi-service      # ✅ Service
+  HPA_NAME: iris-fastapi-hpa              # ✅ HPA
+  NAMESPACE: default                      # ✅ Namespace
 
 # =====================================================================
-# 🚀 DEPLOY JOB
+# 🚀 MAIN JOB: Deploy → Test → Analyze
 # =====================================================================
 jobs:
   deploy:
@@ -53,51 +45,51 @@ jobs:
       # -----------------------------------------------------------------
       # 1️⃣ Checkout Source Code
       # -----------------------------------------------------------------
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       # -----------------------------------------------------------------
-      # 2️⃣ Authenticate to Google Cloud using a Service Account key
+      # 2️⃣ Authenticate to Google Cloud
       # -----------------------------------------------------------------
-      - name: Authenticate Google Cloud
+      - name: Authenticate with Google Cloud
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_CREDENTIALS_JSON }}
 
       # -----------------------------------------------------------------
-      # 3️⃣ Setup gcloud CLI and configure default project
+      # 3️⃣ Setup gcloud CLI
       # -----------------------------------------------------------------
-      - name: Configure gcloud CLI
+      - name: Setup gcloud CLI
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.PROJECT_ID }}
           export_default_credentials: true
 
       # -----------------------------------------------------------------
-      # 4️⃣ Install GKE Auth Plugin (required for modern GKE authentication)
+      # 4️⃣ Install GKE Auth Plugin (Required for kubectl with GKE)
       # -----------------------------------------------------------------
       - name: Install GKE Auth Plugin
         run: gcloud components install gke-gcloud-auth-plugin --quiet
 
       # -----------------------------------------------------------------
-      # 5️⃣ Configure Docker to push images to Artifact Registry
+      # 5️⃣ Authenticate Docker with Artifact Registry
       # -----------------------------------------------------------------
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker ${GAR_LOCATION}-docker.pkg.dev --quiet
 
       # -----------------------------------------------------------------
-      # 6️⃣ Build and Push Docker Image to Artifact Registry
+      # 6️⃣ Build & Push Docker Image
       # -----------------------------------------------------------------
-      - name: Build and Push Image
+      - name: Build and Push Docker image
         run: |
           IMAGE_URI="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE}:latest"
-          echo "📦 Building Docker image: $IMAGE_URI"
+          echo "📦 Building Docker image → $IMAGE_URI"
           docker build -t "$IMAGE_URI" .
           docker push "$IMAGE_URI"
-          echo "✅ Image pushed successfully!"
+          echo "✅ Docker image pushed successfully!"
 
       # -----------------------------------------------------------------
-      # 7️⃣ Fetch Cluster Credentials for kubectl access
+      # 7️⃣ Get GKE Credentials (so kubectl can access the cluster)
       # -----------------------------------------------------------------
       - name: Get GKE credentials
         run: |
@@ -106,9 +98,9 @@ jobs:
             --project "${PROJECT_ID}"
 
       # -----------------------------------------------------------------
-      # 8️⃣ Apply Kubernetes Manifests (Deployment + Service)
+      # 8️⃣ Apply Kubernetes Manifests
       # -----------------------------------------------------------------
-      # In flat structure, files are directly in repo root (no /k8s folder)
+      # Deployment, Service, and HPA are all in root directory (flat structure)
       # -----------------------------------------------------------------
       - name: Apply Kubernetes manifests
         run: |
@@ -117,44 +109,49 @@ jobs:
           kubectl apply -f service.yaml --namespace "$NAMESPACE"
 
       # -----------------------------------------------------------------
-      # 9️⃣ Deploy Updated Image (forces rollout of latest Docker image)
+      # 9️⃣ Update Deployment Image and Wait for Rollout
       # -----------------------------------------------------------------
-      - name: Deploy updated image
+      - name: Update deployment with latest image
         run: |
           IMAGE_URI="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE}:latest"
           CONTAINER_NAME=$(kubectl get deployment "$DEPLOYMENT_NAME" \
             -o jsonpath='{.spec.template.spec.containers[0].name}' \
             --namespace "$NAMESPACE")
+
           echo "🔄 Updating deployment → $IMAGE_URI"
           kubectl set image deployment/"$DEPLOYMENT_NAME" \
             "$CONTAINER_NAME"="$IMAGE_URI" \
             --namespace "$NAMESPACE"
+
           echo "⏳ Waiting for rollout to complete..."
           kubectl rollout status deployment/"$DEPLOYMENT_NAME" \
             --namespace "$NAMESPACE" \
             --timeout=5m
 
       # -----------------------------------------------------------------
-      # 🔟 Verify Deployed Pods
+      # 🔟 Verify Pods and Deployment Health
       # -----------------------------------------------------------------
-      - name: Verify deployed pods
-        run: kubectl get pods --namespace "$NAMESPACE" -o wide
+      - name: Verify deployment
+        run: |
+          echo "🔍 Checking pods and deployment status..."
+          kubectl get deployment "$DEPLOYMENT_NAME" --namespace "$NAMESPACE" -o wide
+          kubectl get pods --namespace "$NAMESPACE" -o wide
 
       # -----------------------------------------------------------------
       # 1️⃣1️⃣ Apply Horizontal Pod Autoscaler (HPA)
       # -----------------------------------------------------------------
-      - name: Apply Horizontal Pod Autoscaler
+      - name: Apply HPA
         run: |
-          echo "⚙️ Applying HPA (min=1, max=3)..."
+          echo "⚙️ Applying Horizontal Pod Autoscaler..."
           kubectl apply -f hpa.yaml --namespace "$NAMESPACE"
           kubectl get hpa --namespace "$NAMESPACE"
 
       # -----------------------------------------------------------------
       # 1️⃣2️⃣ Stress Test #1 — Autoscaling Enabled
       # -----------------------------------------------------------------
-      - name: Stress Test with Autoscaling
+      - name: Stress Test (Autoscaling)
         run: |
-          echo "🏋️ Installing wrk (HTTP benchmarking tool)..."
+          echo "🏋️ Installing wrk benchmarking tool..."
           sudo apt-get update -y && sudo apt-get install -y wrk
 
           echo "🌐 Fetching external LoadBalancer IP..."
@@ -162,54 +159,55 @@ jobs:
           echo "✅ External IP: $EXTERNAL_IP"
 
           if [ -z "$EXTERNAL_IP" ]; then
-            echo "❌ ERROR: LoadBalancer IP not found."
+            echo "❌ ERROR: LoadBalancer IP not found. Exiting..."
             exit 1
           fi
 
           echo "🚦 Running stress test (1000 concurrent requests)..."
           wrk -t4 -c1000 -d30s -s scripts/post.lua http://$EXTERNAL_IP/predict | tee wrk_test1.log
 
-          echo "📊 Checking scaling behavior..."
+          echo "📊 Checking scaling status..."
           kubectl get hpa --namespace "$NAMESPACE"
           kubectl get pods --namespace "$NAMESPACE" -o wide
 
       # -----------------------------------------------------------------
-      # 1️⃣3️⃣ Disable Autoscaling (set replicas=1 for fixed test)
+      # 1️⃣3️⃣ Disable Autoscaling (Fixed Pod Count = 1)
       # -----------------------------------------------------------------
-      - name: Disable Autoscaling (Fix replicas=1)
+      - name: Disable Autoscaling (set replicas=1)
         run: |
           echo "🧱 Disabling autoscaling..."
           kubectl delete hpa "$HPA_NAME" --namespace "$NAMESPACE" || true
           kubectl scale deployment "$DEPLOYMENT_NAME" --replicas=1 --namespace "$NAMESPACE"
 
       # -----------------------------------------------------------------
-      # 1️⃣4️⃣ Stress Test #2 — Fixed 1 Pod
+      # 1️⃣4️⃣ Stress Test #2 — Fixed Single Pod
       # -----------------------------------------------------------------
-      - name: Stress Test with Fixed Pod Count
+      - name: Stress Test (Single Pod)
         run: |
-          echo "🚦 Running second stress test (2000 concurrent requests, 1 pod)..."
+          echo "🚦 Running second stress test (2000 concurrent requests)..."
           EXTERNAL_IP=$(kubectl get svc $SERVICE_NAME -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
           wrk -t4 -c2000 -d30s -s scripts/post.lua http://$EXTERNAL_IP/predict | tee wrk_test2.log
 
-          echo "📈 Gathering pod metrics..."
+          echo "📈 Checking pod and resource usage..."
           kubectl get pods --namespace "$NAMESPACE" -o wide
           kubectl top pods --namespace "$NAMESPACE" || echo "⚠️ Metrics server not installed"
 
       # -----------------------------------------------------------------
-      # 1️⃣5️⃣ Upload Load Test Results as Artifacts
+      # 1️⃣5️⃣ Upload Load Test Results
       # -----------------------------------------------------------------
-      - name: Upload wrk results
+      - name: Upload Load Test Results
         uses: actions/upload-artifact@v4
         with:
           name: load-test-results
           path: wrk_test*.log
 
       # -----------------------------------------------------------------
-      # 1️⃣6️⃣ Summarize Test Results
+      # 1️⃣6️⃣ Summary Step
       # -----------------------------------------------------------------
-      - name: Summarize Test Results
+      - name: Summarize Results
         run: |
-          echo "✅ Load Test Summary:"
-          echo "- Test 1: Autoscaling (1→3 pods) with 1000 requests"
-          echo "- Test 2: Fixed 1 pod with 2000 requests"
-          echo "Use workflow logs + artifacts to analyze scaling and latency."
+          echo "✅ Deployment and Tests Completed Successfully!"
+          echo "------------------------------------------------"
+          echo "📈 Test 1: Autoscaling enabled (1→3 pods)"
+          echo "📈 Test 2: Fixed single pod stress test"
+          echo "View wrk_test*.log artifacts for detailed metrics."
