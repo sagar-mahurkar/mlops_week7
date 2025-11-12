@@ -1,20 +1,18 @@
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: iris-api-hpa
-  labels:
-    app: iris-api
+  name: iris-fastapi-hpa
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: demo-iris-workload        # must match deployment name
-  minReplicas: 1                     # start with 1 pod
-  maxReplicas: 3                     # scale up to 3 pods
+    name: demo-iris-workload
+  minReplicas: 1
+  maxReplicas: 3
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: 60     # scale when average CPU > 60%
+          averageUtilization: 60
