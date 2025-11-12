@@ -1,218 +1,143 @@
-# =====================================================================
-# 🌐 Continuous Deployment: FastAPI app → GKE (with autoscaling + tests)
-# ---------------------------------------------------------------------
-# This workflow:
-# 1️⃣ Builds & pushes Docker image to Google Artifact Registry
-# 2️⃣ Deploys FastAPI to GKE (Autopilot or Standard cluster)
-# 3️⃣ Applies Service, HPA, and runs stress/load tests
-# =====================================================================
+name: Manual Stress Test Pipeline
 
-name: CD - Deploy FastAPI to GKE
-
-# ---------------------------------------------------------------------
-# 🔁 Triggers:
-# ---------------------------------------------------------------------
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+    # Allows triggering manually from the GitHub Actions tab
 
-# ---------------------------------------------------------------------
-# 🧱 Global Environment Variables (set via GitHub Secrets)
-# ---------------------------------------------------------------------
+permissions:
+  contents: write # Required for CML to write comments
+  id-token: write # Required for GCP authentication
+
 env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  GAR_LOCATION: us-central1
-  REPOSITORY: ${{ secrets.GAR_REPO }}
-  IMAGE: demo-log-ml-service              # ✅ Docker image name
-  CLUSTER_NAME: ${{ secrets.GKE_CLUSTER }}
-  CLUSTER_LOCATION: ${{ secrets.GKE_LOCATION }}
-  DEPLOYMENT_NAME: demo-iris-workload     # ✅ Kubernetes Deployment
-  SERVICE_NAME: iris-fastapi-service      # ✅ Service
-  HPA_NAME: iris-fastapi-hpa              # ✅ HPA
-  NAMESPACE: default                      # ✅ Namespace
+  # --- GKE Deployment Configuration (Updated to match first file's variable names) ---
+  PROJECT_ID: lively-nimbus-473407-m9
+  GAR_LOCATION: us-central1         
+  REPOSITORY: my-repo
+  IMAGE: iris-api         
+  CLUSTER_NAME: demo-gke-iris-cluster  
+  CLUSTER_LOCATION: us-central1-a   
+  # NOTE: The DEPLOYMENT_NAME is used for K8s object names (HPA, SVC, Deployment)
+  DEPLOYMENT_NAME: iris-fastapi
+  SERVICE_NAME: iris-fastapi-service
+  HPA_NAME: iris-fastapi-hpa         
+  NAMESPACE: default
 
-# =====================================================================
-# 🚀 MAIN JOB: Deploy → Test → Analyze
-# =====================================================================
 jobs:
-  deploy:
-    name: Deploy FastAPI to GKE and Run Load Tests
+  # ==========================================================
+  # JOB 1: STRESS TESTING AND HPA DEMO
+  # Runs the test against the existing, deployed application
+  # ==========================================================
+  stress-test:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 10
+    
     steps:
-      # -----------------------------------------------------------------
-      # 1️⃣ Checkout Source Code
-      # -----------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      # -----------------------------------------------------------------
-      # 2️⃣ Authenticate to Google Cloud
-      # -----------------------------------------------------------------
-      - name: Authenticate with Google Cloud
-        uses: google-github-actions/auth@v2
+      
+      - name: Setup CML
+        uses: iterative/setup-cml@v2.0.1
+        
+      - name: Google Cloud Authentication
+        uses: 'google-github-actions/auth@v2'
         with:
           credentials_json: ${{ secrets.GCP_CREDENTIALS_JSON }}
 
-      # -----------------------------------------------------------------
-      # 3️⃣ Setup gcloud CLI
-      # -----------------------------------------------------------------
-      - name: Setup gcloud CLI
-        uses: google-github-actions/setup-gcloud@v2
+      - name: Get GKE Credentials (Configure kubectl)
+        uses: google-github-actions/get-gke-credentials@v2
         with:
-          project_id: ${{ env.PROJECT_ID }}
-          export_default_credentials: true
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location: ${{ env.GKE_LOCATION }}
 
-      # -----------------------------------------------------------------
-      # 4️⃣ Install GKE Auth Plugin (Required for kubectl with GKE)
-      # -----------------------------------------------------------------
-      - name: Install GKE Auth Plugin
-        run: gcloud components install gke-gcloud-auth-plugin --quiet
+      # -----------------------------------------------------
+      # PREREQUISITES: INSTALL WRK AND GET EXTERNAL IP
+      # -----------------------------------------------------
+      - name: Install wrk (HTTP benchmarking tool)
+        run: sudo apt-get update && sudo apt-get install -y wrk
 
-      # -----------------------------------------------------------------
-      # 5️⃣ Authenticate Docker with Artifact Registry
-      # -----------------------------------------------------------------
-      - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker ${GAR_LOCATION}-docker.pkg.dev --quiet
-
-      # -----------------------------------------------------------------
-      # 6️⃣ Build & Push Docker Image
-      # -----------------------------------------------------------------
-      - name: Build and Push Docker image
+      - name: Get Service External IP (Immediate Check)
+        id: get_ip
         run: |
-          IMAGE_URI="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE}:latest"
-          echo "📦 Building Docker image → $IMAGE_URI"
-          docker build -t "$IMAGE_URI" .
-          docker push "$IMAGE_URI"
-          echo "✅ Docker image pushed successfully!"
-
-      # -----------------------------------------------------------------
-      # 7️⃣ Get GKE Credentials (so kubectl can access the cluster)
-      # -----------------------------------------------------------------
-      - name: Get GKE credentials
-        run: |
-          gcloud container clusters get-credentials "${CLUSTER_NAME}" \
-            --region "${CLUSTER_LOCATION}" \
-            --project "${PROJECT_ID}"
-
-      # -----------------------------------------------------------------
-      # 8️⃣ Apply Kubernetes Manifests
-      # -----------------------------------------------------------------
-      # Deployment, Service, and HPA are all in root directory (flat structure)
-      # -----------------------------------------------------------------
-      - name: Recreate Kubernetes Deployment and Service
-        run: |
-          echo "🧩 Cleaning up old deployment if it exists..."
-          kubectl delete deployment "$DEPLOYMENT_NAME" --namespace "$NAMESPACE" --ignore-not-found
-          kubectl delete svc "$SERVICE_NAME" --namespace "$NAMESPACE" --ignore-not-found
-      
-          echo "🧩 Applying new manifests..."
-          kubectl apply -f k8s/deployment.yaml --namespace "$NAMESPACE"
-          kubectl apply -f k8s/service.yaml --namespace "$NAMESPACE"
-
-
-      # -----------------------------------------------------------------
-      # 9️⃣ Update Deployment Image and Wait for Rollout
-      # -----------------------------------------------------------------
-      - name: Update deployment with latest image
-        run: |
-          IMAGE_URI="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE}:latest"
-          CONTAINER_NAME=$(kubectl get deployment "$DEPLOYMENT_NAME" \
-            -o jsonpath='{.spec.template.spec.containers[0].name}' \
-            --namespace "$NAMESPACE")
-
-          echo "🔄 Updating deployment → $IMAGE_URI"
-          kubectl set image deployment/"$DEPLOYMENT_NAME" \
-            "$CONTAINER_NAME"="$IMAGE_URI" \
-            --namespace "$NAMESPACE"
-
-          echo "⏳ Waiting for rollout to complete..."
-          kubectl rollout status deployment/"$DEPLOYMENT_NAME" \
-            --namespace "$NAMESPACE" \
-            --timeout=5m
-
-      # -----------------------------------------------------------------
-      # 🔟 Verify Pods and Deployment Health
-      # -----------------------------------------------------------------
-      - name: Verify deployment
-        run: |
-          echo "🔍 Checking pods and deployment status..."
-          kubectl get deployment "$DEPLOYMENT_NAME" --namespace "$NAMESPACE" -o wide
-          kubectl get pods --namespace "$NAMESPACE" -o wide
-
-      # -----------------------------------------------------------------
-      # 1️⃣1️⃣ Apply Horizontal Pod Autoscaler (HPA)
-      # -----------------------------------------------------------------
-      - name: Apply HPA
-        run: |
-          echo "⚙️ Applying Horizontal Pod Autoscaler..."
-          kubectl apply -f hpa.yaml --namespace "$NAMESPACE"
-          kubectl get hpa --namespace "$NAMESPACE"
-
-      # -----------------------------------------------------------------
-      # 1️⃣2️⃣ Stress Test #1 — Autoscaling Enabled
-      # -----------------------------------------------------------------
-      - name: Stress Test (Autoscaling)
-        run: |
-          echo "🏋️ Installing wrk benchmarking tool..."
-          sudo apt-get update -y && sudo apt-get install -y wrk
-
-          echo "🌐 Fetching external LoadBalancer IP..."
-          EXTERNAL_IP=$(kubectl get svc $SERVICE_NAME -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-          echo "✅ External IP: $EXTERNAL_IP"
-
+          # Use SERVICE_NAME environment variable
+          EXTERNAL_IP=$(kubectl get svc ${{ env.SERVICE_NAME }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
           if [ -z "$EXTERNAL_IP" ]; then
-            echo "❌ ERROR: LoadBalancer IP not found. Exiting..."
+            echo "Error: External IP not found immediately. Ensure LoadBalancer is ready."
             exit 1
           fi
-
-          echo "🚦 Running stress test (1000 concurrent requests)..."
-          wrk -t4 -c1000 -d30s -s scripts/post.lua http://$EXTERNAL_IP/predict | tee wrk_test1.log
-
-          echo "📊 Checking scaling status..."
-          kubectl get hpa --namespace "$NAMESPACE"
-          kubectl get pods --namespace "$NAMESPACE" -o wide
-
-      # -----------------------------------------------------------------
-      # 1️⃣3️⃣ Disable Autoscaling (Fixed Pod Count = 1)
-      # -----------------------------------------------------------------
-      - name: Disable Autoscaling (set replicas=1)
+          echo "::set-output name=external_ip::$EXTERNAL_IP"
+          echo "External IP found: $EXTERNAL_IP"
+          
+      # -----------------------------------------------------
+      # SCENARIO 1: HPA DEMONSTRATION (Max Pods: 3)
+      # -----------------------------------------------------
+      - name: Configure HPA for Max Pods 3 and Stress Test (1000+ Requests)
+        id: scenario_1
         run: |
-          echo "🧱 Disabling autoscaling..."
-          kubectl delete hpa "$HPA_NAME" --namespace "$NAMESPACE" || true
-          kubectl scale deployment "$DEPLOYMENT_NAME" --replicas=1 --namespace "$NAMESPACE"
+          EXTERNAL_URL="http://${{ steps.get_ip.outputs.external_ip }}"
+          TARGET_ENDPOINT="${EXTERNAL_URL}/live_check" # <-- CHANGED TO /live_check
+          echo "## 📈 SCENARIO 1: HPA Scaling (Max Pods: 3)" > stress_report.md
+          
+          # 1. Ensure HPA maxReplicas is 3 - Use HPA_NAME env variable
+          kubectl patch hpa/${{ env.HPA_NAME }} -p '{"spec":{"maxReplicas": 3}}' --namespace ${{ env.NAMESPACE }}
+          echo "HPA set to maxReplicas=3. Deployment scaled to 1 initially."
+          kubectl get hpa ${{ env.HPA_NAME }} --namespace ${{ env.NAMESPACE }}
+          
+          # 2. Run wrk: sustained load (120 connections for 2 mins)
+          echo "Starting stress test on $TARGET_ENDPOINT for 2 minutes to trigger HPA..."
+          wrk -t4 -c120 -d120s $TARGET_ENDPOINT > wrk_results_1.txt
+          
+          # 3. Write CML Report for Scenario 1 - Dump Raw Output
+          echo "The load test ran for **2 minutes (120 seconds)** with 120 concurrent connections hitting \`/live_check\`." >> stress_report.md
+          echo "" >> stress_report.md
+          echo "### Test 1 Results (Raw wrk Output):" >> stress_report.md
+          echo "\`\`\`text" >> stress_report.md
+          # Dumps the complete wrk output
+          cat wrk_results_1.txt >> stress_report.md
+          echo "\`\`\`" >> stress_report.md
+          
+          # 4. Observe Scaling (Wait for HPA to act)
+          echo "Waiting 60s to observe scaling..." >> stress_report.md
+          sleep 60
+          echo "### Kubernetes Status After Scaling Attempt:" >> stress_report.md
+          kubectl get deployment ${{ env.DEPLOYMENT_NAME }} -o wide --namespace ${{ env.NAMESPACE }} >> stress_report.md
+          kubectl get hpa ${{ env.HPA_NAME }} -o wide --namespace ${{ env.NAMESPACE }} >> stress_report.md
 
-      # -----------------------------------------------------------------
-      # 1️⃣4️⃣ Stress Test #2 — Fixed Single Pod
-      # -----------------------------------------------------------------
-      - name: Stress Test (Single Pod)
+      # -----------------------------------------------------
+      # SCENARIO 2: BOTTLENECK OBSERVATION (Max Pods: 1, Concurrency 2000)
+      # -----------------------------------------------------
+      - name: Restrict HPA to Max Pods 1 and Stress Test (Concurrency 2000)
+        id: scenario_2
         run: |
-          echo "🚦 Running second stress test (2000 concurrent requests)..."
-          EXTERNAL_IP=$(kubectl get svc $SERVICE_NAME -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-          wrk -t4 -c2000 -d30s -s scripts/post.lua http://$EXTERNAL_IP/predict | tee wrk_test2.log
-
-          echo "📈 Checking pod and resource usage..."
-          kubectl get pods --namespace "$NAMESPACE" -o wide
-          kubectl top pods --namespace "$NAMESPACE" || echo "⚠️ Metrics server not installed"
-
-      # -----------------------------------------------------------------
-      # 1️⃣5️⃣ Upload Load Test Results
-      # -----------------------------------------------------------------
-      - name: Upload Load Test Results
-        uses: actions/upload-artifact@v4
-        with:
-          name: load-test-results
-          path: wrk_test*.log
-
-      # -----------------------------------------------------------------
-      # 1️⃣6️⃣ Summary Step
-      # -----------------------------------------------------------------
-      - name: Summarize Results
-        run: |
-          echo "✅ Deployment and Tests Completed Successfully!"
-          echo "------------------------------------------------"
-          echo "📈 Test 1: Autoscaling enabled (1→3 pods)"
-          echo "📈 Test 2: Fixed single pod stress test"
-          echo "View wrk_test*.log artifacts for detailed metrics."
+          EXTERNAL_URL="http://${{ steps.get_ip.outputs.external_ip }}"
+          TARGET_ENDPOINT="${EXTERNAL_URL}/live_check" # <-- CHANGED TO /live_check
+          echo -e "\n\n---" >> stress_report.md
+          echo "## 🚨 SCENARIO 2: Bottleneck (Max Pods: 1, Concurrency: 2000)" >> stress_report.md
+          
+          # 1. Restrict scaling - Use DEPLOYMENT_NAME and HPA_NAME env variables
+          kubectl scale deployment/${{ env.DEPLOYMENT_NAME }} --replicas=1 --namespace ${{ env.NAMESPACE }} # Scale down
+          kubectl patch hpa/${{ env.HPA_NAME }} -p '{"spec":{"maxReplicas": 1}}' --namespace ${{ env.NAMESPACE }}
+          echo "HPA restricted to maxReplicas=1."
+          sleep 30 # Give K8s time to adjust
+          
+          # 2. Run wrk: high concurrency bottleneck test (2000 connections)
+          echo "Starting bottleneck test on $TARGET_ENDPOINT with concurrency 2000..."
+          wrk -t4 -c2000 -d10s $TARGET_ENDPOINT > wrk_results_2.txt
+          
+          # 3. Write CML Report for Scenario 2 - Dump Raw Output
+          echo "This test uses extreme concurrency (2000 connections) hitting \`/live_check\` against a single replica." >> stress_report.md
+          echo "" >> stress_report.md
+          echo "### Test 2 Results (Raw wrk Output):" >> stress_report.md
+          echo "\`\`\`text" >> stress_report.md
+          # Dumps the complete wrk output
+          cat wrk_results_2.txt >> stress_report.md
+          echo "\`\`\`" >> stress_report.md
+          
+          # 4. Observe Scaling (Should remain 1 pod)
+          echo "### Kubernetes Status After Bottleneck Test (Should remain 1 replica):" >> stress_report.md
+          kubectl get deployment ${{ env.DEPLOYMENT_NAME }} -o wide --namespace ${{ env.NAMESPACE }} >> stress_report.md
+          kubectl get hpa ${{ env.HPA_NAME }} -o wide --namespace ${{ env.NAMESPACE }} >> stress_report.md
+          
+      - name: Create CML Report Comment
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: cml comment create stress_report.md
