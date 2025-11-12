@@ -102,11 +102,16 @@ jobs:
       # -----------------------------------------------------------------
       # Deployment, Service, and HPA are all in root directory (flat structure)
       # -----------------------------------------------------------------
-      - name: Apply Kubernetes manifests
+      - name: Recreate Kubernetes Deployment and Service
         run: |
-          echo "🧩 Applying Kubernetes manifests..."
-          kubectl apply -f deployment.yaml --namespace "$NAMESPACE"
-          kubectl apply -f service.yaml --namespace "$NAMESPACE"
+          echo "🧩 Cleaning up old deployment if it exists..."
+          kubectl delete deployment "$DEPLOYMENT_NAME" --namespace "$NAMESPACE" --ignore-not-found
+          kubectl delete svc "$SERVICE_NAME" --namespace "$NAMESPACE" --ignore-not-found
+      
+          echo "🧩 Applying new manifests..."
+          kubectl apply -f k8s/deployment.yaml --namespace "$NAMESPACE"
+          kubectl apply -f k8s/service.yaml --namespace "$NAMESPACE"
+
 
       # -----------------------------------------------------------------
       # 9️⃣ Update Deployment Image and Wait for Rollout
