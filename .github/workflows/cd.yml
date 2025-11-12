@@ -105,7 +105,7 @@ jobs:
           IMAGE_URI="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE}:latest"
           echo "🔄 Updating deployment '$DEPLOYMENT_NAME' with image: $IMAGE_URI"
 
-          # Auto-detect container name to prevent errors if it differs from deployment name
+          # Auto-detect container name (prevents hardcoding errors)
           CONTAINER_NAME=$(kubectl get deployment "$DEPLOYMENT_NAME" \
             --namespace "$NAMESPACE" \
             -o jsonpath='{.spec.template.spec.containers[0].name}')
@@ -117,14 +117,56 @@ jobs:
             "$CONTAINER_NAME"="$IMAGE_URI" \
             --namespace "$NAMESPACE"
 
-          # Wait for the rollout to complete and confirm success
+          # Wait for rollout to complete
           echo "⏳ Waiting for rollout..."
           kubectl rollout status deployment/"$DEPLOYMENT_NAME" --namespace "$NAMESPACE" --timeout=5m
 
       # -----------------------------------------------------------
-      # 11. Optional: Verify rollout
+      # 11. Verify rollout and pod status
       # -----------------------------------------------------------
       - name: Verify deployed pods
         run: |
           echo "🔍 Listing pods in namespace '$NAMESPACE':"
           kubectl get pods --namespace "$NAMESPACE" -o wide
+
+      # -----------------------------------------------------------
+      # 12. (NEW) Deploy Horizontal Pod Autoscaler
+      # -----------------------------------------------------------
+      - name: Apply HPA configuration
+        run: |
+          echo "⚙️ Applying Horizontal Pod Autoscaler..."
+          kubectl apply -f k8s/hpa.yaml --namespace "$NAMESPACE"
+          kubectl get hpa --namespace "$NAMESPACE"
+
+      # -----------------------------------------------------------
+      # 13. (NEW) Stress Test the Deployment with wrk
+      # -----------------------------------------------------------
+      - name: Stress test FastAPI endpoint with wrk
+        run: |
+          echo "🏋️ Installing wrk load testing tool..."
+          sudo apt-get update -y && sudo apt-get install -y wrk
+
+          echo "🌐 Fetching external LoadBalancer IP..."
+          EXTERNAL_IP=$(kubectl get svc iris-fastapi-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          echo "✅ External IP detected: $EXTERNAL_IP"
+
+          if [ -z "$EXTERNAL_IP" ]; then
+            echo "❌ ERROR: No external IP found. Ensure your service type is LoadBalancer."
+            exit 1
+          fi
+
+          echo "🚦 Running stress test for 30 seconds with 1000 concurrent users..."
+          wrk -t4 -c1000 -d30s -s scripts/post.lua http://$EXTERNAL_IP/predict || true
+
+          echo "✅ Stress test completed. Fetching HPA and pod status..."
+          kubectl get hpa --namespace "$NAMESPACE"
+          kubectl get pods --namespace "$NAMESPACE" -o wide
+
+      # -----------------------------------------------------------
+      # 14. (Optional) Record post-test observations
+      # -----------------------------------------------------------
+      - name: Output scaling results
+        run: |
+          echo "📊 Current pod utilization and scaling status:"
+          kubectl get hpa --namespace "$NAMESPACE" -o wide
+          kubectl top pods --namespace "$NAMESPACE" || echo "⚠️ Metrics server may not be enabled"
