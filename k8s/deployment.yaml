@@ -1,11 +1,11 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: iris-api-deployment
+  name: demo-iris-workload                 # Must match DEPLOYMENT_NAME in cd.yml
   labels:
     app: iris-api
 spec:
-  replicas: 2  # adjust replicas based on load
+  replicas: 1                              # Start with 1 pod; HPA will scale to 3
   selector:
     matchLabels:
       app: iris-api
@@ -40,15 +40,4 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 20
       restartPolicy: Always
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: iris-api-service
-spec:
-  type: LoadBalancer
-  selector:
-    app: iris-api
-  ports:
-    - port: 80
-      targetPort: 80
+
