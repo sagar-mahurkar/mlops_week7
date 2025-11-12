@@ -113,8 +113,8 @@ jobs:
       - name: Apply Kubernetes manifests
         run: |
           echo "🧩 Applying Kubernetes manifests..."
-          kubectl apply -f deployment.yaml --namespace "$NAMESPACE"
-          kubectl apply -f service.yaml --namespace "$NAMESPACE"
+          kubectl apply -f k8s/deployment.yaml --namespace "$NAMESPACE"
+          kubectl apply -f k8s/service.yaml --namespace "$NAMESPACE"
 
       # -----------------------------------------------------------------
       # 9️⃣ Deploy Updated Image (forces rollout of latest Docker image)
