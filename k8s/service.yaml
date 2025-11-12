@@ -1,14 +1,11 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: iris-api-service
-  labels:
-    app: iris-api
+  name: iris-fastapi-service
 spec:
-  type: LoadBalancer        # Exposes the app externally
+  type: LoadBalancer
   selector:
-    app: iris-api           # Must match deployment label
+    app: iris-api
   ports:
-    - protocol: TCP
-      port: 80              # External port
-      targetPort: 80        # Container port (FastAPI app)
+    - port: 80
+      targetPort: 8200
