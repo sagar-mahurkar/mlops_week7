@@ -1,4 +1,4 @@
-name: CD - Deploy FastAPI to GKE # Name of the GitHub Actions workflow
+name: CD - Deploy FastAPI to GKE
 
 on:
   push:
@@ -15,6 +15,8 @@ env:
   CLUSTER_NAME: ${{ secrets.GKE_CLUSTER }}
   CLUSTER_LOCATION: ${{ secrets.GKE_LOCATION }}
   DEPLOYMENT_NAME: demo-iris-workload
+  SERVICE_NAME: iris-fastapi-service
+  HPA_NAME: iris-fastapi-hpa
   NAMESPACE: default
 
 jobs:
@@ -78,7 +80,16 @@ jobs:
             --project "${PROJECT_ID}"
 
       # -----------------------------------------------------------
-      # 8. Deploy Image to GKE
+      # 8. Apply Kubernetes Manifests (Deployment + Service)
+      # -----------------------------------------------------------
+      - name: Apply Kubernetes manifests
+        run: |
+          echo "🧩 Applying Kubernetes manifests..."
+          kubectl apply -f k8s/deployment.yaml --namespace "$NAMESPACE"
+          kubectl apply -f k8s/service.yaml --namespace "$NAMESPACE"
+
+      # -----------------------------------------------------------
+      # 9. Deploy Updated Image
       # -----------------------------------------------------------
       - name: Deploy updated image
         run: |
@@ -94,14 +105,14 @@ jobs:
           kubectl rollout status deployment/"$DEPLOYMENT_NAME" --namespace "$NAMESPACE" --timeout=5m
 
       # -----------------------------------------------------------
-      # 9. Verify Pods
+      # 10. Verify Pods
       # -----------------------------------------------------------
       - name: Verify deployed pods
         run: |
           kubectl get pods --namespace "$NAMESPACE" -o wide
 
       # -----------------------------------------------------------
-      # 10. Deploy Horizontal Pod Autoscaler (min=1, max=3)
+      # 11. Deploy Horizontal Pod Autoscaler (min=1, max=3)
       # -----------------------------------------------------------
       - name: Apply Horizontal Pod Autoscaler
         run: |
@@ -110,7 +121,7 @@ jobs:
           kubectl get hpa --namespace "$NAMESPACE"
 
       # -----------------------------------------------------------
-      # 11. Stress Test #1: Autoscaling Enabled (1000 concurrent)
+      # 12. Stress Test #1: Autoscaling Enabled (1000 concurrent)
       # -----------------------------------------------------------
       - name: Stress Test with Autoscaling
         run: |
@@ -118,7 +129,7 @@ jobs:
           sudo apt-get update -y && sudo apt-get install -y wrk
 
           echo "🌐 Fetching external LoadBalancer IP..."
-          EXTERNAL_IP=$(kubectl get svc iris-fastapi-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          EXTERNAL_IP=$(kubectl get svc $SERVICE_NAME -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
           echo "✅ External IP: $EXTERNAL_IP"
 
           if [ -z "$EXTERNAL_IP" ]; then
@@ -127,41 +138,50 @@ jobs:
           fi
 
           echo "🚦 Running stress test (1000 concurrent requests)..."
-          wrk -t4 -c1000 -d30s -s scripts/post.lua http://$EXTERNAL_IP/predict || true
+          wrk -t4 -c1000 -d30s -s scripts/post.lua http://$EXTERNAL_IP/predict | tee wrk_test1.log
 
           echo "📊 Checking scaling behavior..."
           kubectl get hpa --namespace "$NAMESPACE"
           kubectl get pods --namespace "$NAMESPACE" -o wide
 
       # -----------------------------------------------------------
-      # 12. Disable Autoscaling & Fix Replicas to 1
+      # 13. Disable Autoscaling & Fix Replicas to 1
       # -----------------------------------------------------------
       - name: Disable Autoscaling (Fix replicas=1)
         run: |
           echo "🧱 Disabling autoscaling and fixing replicas=1..."
-          kubectl delete hpa iris-fastapi-hpa --namespace "$NAMESPACE" || true
+          kubectl delete hpa "$HPA_NAME" --namespace "$NAMESPACE" || true
           kubectl scale deployment "$DEPLOYMENT_NAME" --replicas=1 --namespace "$NAMESPACE"
           kubectl get deployment "$DEPLOYMENT_NAME" --namespace "$NAMESPACE"
 
       # -----------------------------------------------------------
-      # 13. Stress Test #2: Fixed 1 Pod (2000 concurrent)
+      # 14. Stress Test #2: Fixed 1 Pod (2000 concurrent)
       # -----------------------------------------------------------
       - name: Stress Test with Fixed Pod Count
         run: |
           echo "🚦 Running second stress test (2000 concurrent requests, 1 pod)..."
-          EXTERNAL_IP=$(kubectl get svc iris-fastapi-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-          wrk -t4 -c2000 -d30s -s scripts/post.lua http://$EXTERNAL_IP/predict || true
+          EXTERNAL_IP=$(kubectl get svc $SERVICE_NAME -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          wrk -t4 -c2000 -d30s -s scripts/post.lua http://$EXTERNAL_IP/predict | tee wrk_test2.log
 
           echo "📈 Gathering post-test pod metrics..."
           kubectl get pods --namespace "$NAMESPACE" -o wide
           kubectl top pods --namespace "$NAMESPACE" || echo "⚠️ Metrics server not installed"
 
       # -----------------------------------------------------------
-      # 14. Summarize Results
+      # 15. Upload Load Test Results
+      # -----------------------------------------------------------
+      - name: Upload wrk results
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-results
+          path: wrk_test*.log
+
+      # -----------------------------------------------------------
+      # 16. Summarize Results
       # -----------------------------------------------------------
       - name: Summarize Test Results
         run: |
           echo "✅ Test Summary:"
           echo "- Test 1: Autoscaling (1→3 pods) with 1000 requests"
           echo "- Test 2: Fixed 1 pod with 2000 requests"
-          echo "Use the logs above and 'kubectl get hpa' to analyze scaling behavior."
+          echo "Use workflow logs + artifacts to analyze scaling behavior."
