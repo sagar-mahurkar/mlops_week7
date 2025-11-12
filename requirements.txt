@@ -7,4 +7,7 @@ tzdata
 dvc
 dvc-gs
 pytest
+pydantic
 mlflow
+# Exporter for Google Cloud
+opentelemetry-exporter-gcp-trace
