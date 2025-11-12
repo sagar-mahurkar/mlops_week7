@@ -1,26 +1,26 @@
 name: CD - Deploy FastAPI to GKE # Name of the GitHub Actions workflow
 
 on:
-  push: # Trigger workflow automatically on push to main
+  push:
     branches:
       - main
-  workflow_dispatch: # Allow manual triggering from GitHub UI
+  workflow_dispatch:
 
 env:
   # General GCP and Application configuration
-  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }} # Google Cloud Project ID
-  GAR_LOCATION: us-central1 # Artifact Registry location
-  REPOSITORY: ${{ secrets.GAR_REPO }} # Artifact Registry repository
-  IMAGE: iris-api # Docker image/application name
-  CLUSTER_NAME: ${{ secrets.GKE_CLUSTER }} # GKE cluster name
-  CLUSTER_LOCATION: ${{ secrets.GKE_LOCATION }} # Cluster region/zone
-  DEPLOYMENT_NAME: demo-iris-workload # Kubernetes Deployment name
-  NAMESPACE: default # Kubernetes namespace
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GAR_LOCATION: us-central1
+  REPOSITORY: ${{ secrets.GAR_REPO }}
+  IMAGE: iris-api
+  CLUSTER_NAME: ${{ secrets.GKE_CLUSTER }}
+  CLUSTER_LOCATION: ${{ secrets.GKE_LOCATION }}
+  DEPLOYMENT_NAME: demo-iris-workload
+  NAMESPACE: default
 
 jobs:
   deploy:
-    name: Deploy FastAPI to GKE
-    runs-on: ubuntu-latest # Runner environment
+    name: Deploy FastAPI to GKE and Run Load Tests
+    runs-on: ubuntu-latest
 
     steps:
       # -----------------------------------------------------------
@@ -53,43 +53,23 @@ jobs:
         run: gcloud components install gke-gcloud-auth-plugin --quiet
 
       # -----------------------------------------------------------
-      # 5. Debug authentication and project
+      # 5. Configure Docker for Artifact Registry
       # -----------------------------------------------------------
-      - name: Debug gcloud auth
-        run: |
-          echo "🔍 Active account:"
-          gcloud auth list
-          echo "🔍 Project:"
-          gcloud config list project
-          echo "🔍 Artifact Registry repositories:"
-          gcloud artifacts repositories list --location=${{ env.GAR_LOCATION }} --project=${{ env.PROJECT_ID }}
-
-      # -----------------------------------------------------------
-      # 6. Configure Docker for Artifact Registry
-      # -----------------------------------------------------------
-      - name: Configure Docker auth for Artifact Registry
+      - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker ${GAR_LOCATION}-docker.pkg.dev --quiet
 
       # -----------------------------------------------------------
-      # 7. Build Docker image
+      # 6. Build and Push Docker Image
       # -----------------------------------------------------------
-      - name: Build Docker image
+      - name: Build and Push Image
         run: |
           IMAGE_URI="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE}:latest"
-          echo "📦 Building image: $IMAGE_URI"
+          echo "📦 Building and pushing image: $IMAGE_URI"
           docker build -t "$IMAGE_URI" .
-
-      # -----------------------------------------------------------
-      # 8. Push Docker image to Artifact Registry
-      # -----------------------------------------------------------
-      - name: Push Docker image
-        run: |
-          IMAGE_URI="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE}:latest"
-          echo "🚀 Pushing image: $IMAGE_URI"
           docker push "$IMAGE_URI"
 
       # -----------------------------------------------------------
-      # 9. Get GKE credentials
+      # 7. Get GKE Credentials
       # -----------------------------------------------------------
       - name: Get GKE credentials
         run: |
@@ -98,75 +78,90 @@ jobs:
             --project "${PROJECT_ID}"
 
       # -----------------------------------------------------------
-      # 10. Deploy updated image to GKE
+      # 8. Deploy Image to GKE
       # -----------------------------------------------------------
-      - name: Deploy updated image to GKE
+      - name: Deploy updated image
         run: |
           IMAGE_URI="${GAR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE}:latest"
-          echo "🔄 Updating deployment '$DEPLOYMENT_NAME' with image: $IMAGE_URI"
-
-          # Auto-detect container name (prevents hardcoding errors)
           CONTAINER_NAME=$(kubectl get deployment "$DEPLOYMENT_NAME" \
-            --namespace "$NAMESPACE" \
-            -o jsonpath='{.spec.template.spec.containers[0].name}')
-          
-          echo "🔍 Using detected container name: $CONTAINER_NAME"
-
-          # Update the deployment image
+            -o jsonpath='{.spec.template.spec.containers[0].name}' \
+            --namespace "$NAMESPACE")
+          echo "🔄 Updating $DEPLOYMENT_NAME → $IMAGE_URI"
           kubectl set image deployment/"$DEPLOYMENT_NAME" \
             "$CONTAINER_NAME"="$IMAGE_URI" \
             --namespace "$NAMESPACE"
-
-          # Wait for rollout to complete
           echo "⏳ Waiting for rollout..."
           kubectl rollout status deployment/"$DEPLOYMENT_NAME" --namespace "$NAMESPACE" --timeout=5m
 
       # -----------------------------------------------------------
-      # 11. Verify rollout and pod status
+      # 9. Verify Pods
       # -----------------------------------------------------------
       - name: Verify deployed pods
         run: |
-          echo "🔍 Listing pods in namespace '$NAMESPACE':"
           kubectl get pods --namespace "$NAMESPACE" -o wide
 
       # -----------------------------------------------------------
-      # 12. (NEW) Deploy Horizontal Pod Autoscaler
+      # 10. Deploy Horizontal Pod Autoscaler (min=1, max=3)
       # -----------------------------------------------------------
-      - name: Apply HPA configuration
+      - name: Apply Horizontal Pod Autoscaler
         run: |
-          echo "⚙️ Applying Horizontal Pod Autoscaler..."
+          echo "⚙️ Applying HPA (min=1, max=3)..."
           kubectl apply -f k8s/hpa.yaml --namespace "$NAMESPACE"
           kubectl get hpa --namespace "$NAMESPACE"
 
       # -----------------------------------------------------------
-      # 13. (NEW) Stress Test the Deployment with wrk
+      # 11. Stress Test #1: Autoscaling Enabled (1000 concurrent)
       # -----------------------------------------------------------
-      - name: Stress test FastAPI endpoint with wrk
+      - name: Stress Test with Autoscaling
         run: |
-          echo "🏋️ Installing wrk load testing tool..."
+          echo "🏋️ Installing wrk..."
           sudo apt-get update -y && sudo apt-get install -y wrk
 
           echo "🌐 Fetching external LoadBalancer IP..."
           EXTERNAL_IP=$(kubectl get svc iris-fastapi-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-          echo "✅ External IP detected: $EXTERNAL_IP"
+          echo "✅ External IP: $EXTERNAL_IP"
 
           if [ -z "$EXTERNAL_IP" ]; then
-            echo "❌ ERROR: No external IP found. Ensure your service type is LoadBalancer."
+            echo "❌ ERROR: LoadBalancer IP not found."
             exit 1
           fi
 
-          echo "🚦 Running stress test for 30 seconds with 1000 concurrent users..."
+          echo "🚦 Running stress test (1000 concurrent requests)..."
           wrk -t4 -c1000 -d30s -s scripts/post.lua http://$EXTERNAL_IP/predict || true
 
-          echo "✅ Stress test completed. Fetching HPA and pod status..."
+          echo "📊 Checking scaling behavior..."
           kubectl get hpa --namespace "$NAMESPACE"
           kubectl get pods --namespace "$NAMESPACE" -o wide
 
       # -----------------------------------------------------------
-      # 14. (Optional) Record post-test observations
+      # 12. Disable Autoscaling & Fix Replicas to 1
       # -----------------------------------------------------------
-      - name: Output scaling results
+      - name: Disable Autoscaling (Fix replicas=1)
         run: |
-          echo "📊 Current pod utilization and scaling status:"
-          kubectl get hpa --namespace "$NAMESPACE" -o wide
-          kubectl top pods --namespace "$NAMESPACE" || echo "⚠️ Metrics server may not be enabled"
+          echo "🧱 Disabling autoscaling and fixing replicas=1..."
+          kubectl delete hpa iris-fastapi-hpa --namespace "$NAMESPACE" || true
+          kubectl scale deployment "$DEPLOYMENT_NAME" --replicas=1 --namespace "$NAMESPACE"
+          kubectl get deployment "$DEPLOYMENT_NAME" --namespace "$NAMESPACE"
+
+      # -----------------------------------------------------------
+      # 13. Stress Test #2: Fixed 1 Pod (2000 concurrent)
+      # -----------------------------------------------------------
+      - name: Stress Test with Fixed Pod Count
+        run: |
+          echo "🚦 Running second stress test (2000 concurrent requests, 1 pod)..."
+          EXTERNAL_IP=$(kubectl get svc iris-fastapi-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          wrk -t4 -c2000 -d30s -s scripts/post.lua http://$EXTERNAL_IP/predict || true
+
+          echo "📈 Gathering post-test pod metrics..."
+          kubectl get pods --namespace "$NAMESPACE" -o wide
+          kubectl top pods --namespace "$NAMESPACE" || echo "⚠️ Metrics server not installed"
+
+      # -----------------------------------------------------------
+      # 14. Summarize Results
+      # -----------------------------------------------------------
+      - name: Summarize Test Results
+        run: |
+          echo "✅ Test Summary:"
+          echo "- Test 1: Autoscaling (1→3 pods) with 1000 requests"
+          echo "- Test 2: Fixed 1 pod with 2000 requests"
+          echo "Use the logs above and 'kubectl get hpa' to analyze scaling behavior."
