@@ -15,7 +15,7 @@ env:
   REPOSITORY: my-repo
   IMAGE: iris-api         
   CLUSTER_NAME: demo-gke-iris-cluster  
-  CLUSTER_LOCATION: us-central1-a   
+  CLUSTER_LOCATION: us-central1   
   # NOTE: The DEPLOYMENT_NAME is used for K8s object names (HPA, SVC, Deployment)
   DEPLOYMENT_NAME: iris-fastapi
   SERVICE_NAME: iris-fastapi-service
@@ -46,8 +46,8 @@ jobs:
       - name: Get GKE Credentials (Configure kubectl)
         uses: google-github-actions/get-gke-credentials@v2
         with:
-          cluster_name: ${{ env.GKE_CLUSTER }}
-          location: ${{ env.GKE_LOCATION }}
+          cluster_name: ${{ env.CLUSTER_NAME }}
+          location: ${{ env.CLUSTER_LOCATION }}
 
       # -----------------------------------------------------
       # PREREQUISITES: INSTALL WRK AND GET EXTERNAL IP
